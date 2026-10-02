@@ -44,8 +44,15 @@ class FastPitchTts private constructor(
                 setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
             }
 
-            val fp = env.createSession(fastpitchFile.absolutePath, opts)
-            val hg = env.createSession(hifiganFile.absolutePath, opts)
+            val (fp, hg) = opts.use {
+                val acoustic = env.createSession(fastpitchFile.absolutePath, it)
+                try {
+                    acoustic to env.createSession(hifiganFile.absolutePath, it)
+                } catch (e: Throwable) {
+                    acoustic.close()
+                    throw e
+                }
+            }
             Log.i(
                 TAG,
                 "Loaded TTS '$lang': fastpitch=${fastpitchFile.name} inputs=${fp.inputNames}, " +
@@ -106,12 +113,17 @@ class FastPitchTts private constructor(
     }
 
     override fun synthesize(text: String): FloatArray? {
+        // Also guard direct engine callers: never feed an entire unbounded message to ORT.
+        if (text.length > SpeechLimits.MAX_TEXT_UNITS) {
+            Log.e(TAG, "TTS_TEXT_LIMIT[$lang]: ${text.length} UTF-16 units; caller must chunk")
+            return null
+        }
         val clean = text.trim()
         if (clean.isEmpty()) return null
 
-        val ids = tokenize(clean)
+        val ids = tokenize(clean) ?: return null
         if (ids.isEmpty()) {
-            Log.w(TAG, "No known symbols in \"$clean\" for '$lang'")
+            Log.w(TAG, "No known symbols in ${clean.length} characters for '$lang'")
             return null
         }
 
@@ -136,7 +148,7 @@ class FastPitchTts private constructor(
     }
 
     /** Longest-match symbol lookup, so multi-character symbols win over single ones. */
-    private fun tokenize(text: String): LongArray {
+    private fun tokenize(text: String): LongArray? {
         val ids = ArrayList<Long>(text.length + 2)
         var i = 0
         val maxSymbol = symbolToId.keys.maxOfOrNull { it.length } ?: 1
@@ -148,6 +160,10 @@ class FastPitchTts private constructor(
                 val candidate = text.substring(i, i + len)
                 val id = symbolToId[candidate]
                 if (id != null) {
+                    if (ids.size >= SpeechLimits.MAX_TOKENS) {
+                        Log.e(TAG, "TTS_TOKEN_LIMIT[$lang]: caller must use smaller chunks")
+                        return null
+                    }
                     ids.add(id)
                     i += len
                     matched = true
@@ -156,9 +172,9 @@ class FastPitchTts private constructor(
                 len--
             }
             if (!matched) {
-                // Unknown character: skip it rather than emitting a wrong phoneme.
-                Log.d(TAG, "Unmapped character '${text[i]}' in '$lang'")
-                i++
+                // Fail visibly rather than silently deleting words/characters from speech.
+                Log.e(TAG, "TTS_UNMAPPED_SYMBOL[$lang]: cannot pronounce complete chunk")
+                return null
             }
         }
         return ids.toLongArray()
@@ -184,7 +200,14 @@ class FastPitchTts private constructor(
         }
 
         return try {
-            fastpitch.run(feeds).use { out -> asMel(out.get(0).value) }
+            fastpitch.run(feeds).use { out ->
+                val tensor = out.get(0) as? OnnxTensor ?: return@use null
+                // Check before .value materialises a potentially enormous Java array, and
+                // before the vocoder sees the mel. ORT has already allocated its native
+                // output here: token caps bound input, not a corrupt graph's internals.
+                require(SpeechLimits.validMelShape(tensor.info.shape)) { "TTS_MEL_LIMIT_OR_SHAPE" }
+                asMel(tensor.value)
+            }
         } finally {
             feeds.values.forEach { runCatching { it.close() } }
         }
@@ -195,7 +218,9 @@ class FastPitchTts private constructor(
             ?: hifigan.inputNames.first()
 
         val bins = mel.size
-        val frames = mel[0].size
+        val frames = mel.firstOrNull()?.size ?: return null
+        require(SpeechLimits.validMelShape(longArrayOf(bins.toLong(), frames.toLong()))) { "TTS_MEL_LIMIT_OR_SHAPE" }
+        require(mel.all { row -> row.size == frames && row.all { it.isFinite() } }) { "TTS_INVALID_MEL" }
         val flat = FloatArray(bins * frames)
         for (m in 0 until bins) mel[m].copyInto(flat, m * frames)
 
@@ -205,7 +230,11 @@ class FastPitchTts private constructor(
             longArrayOf(1, bins.toLong(), frames.toLong())
         )
         return tensor.use {
-            hifigan.run(mapOf(inputName to it)).use { out -> asAudio(out.get(0).value) }
+            hifigan.run(mapOf(inputName to it)).use { out ->
+                val audio = out.get(0) as? OnnxTensor ?: return@use null
+                require(SpeechLimits.validAudioShape(audio.info.shape)) { "TTS_AUDIO_LIMIT_OR_SHAPE" }
+                asAudio(audio.value)?.also { pcm -> require(pcm.all { sample -> sample.isFinite() }) { "TTS_INVALID_AUDIO" } }
+            }
         }
     }
 

@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Owns the text → FastPitch + HiFi-GAN → speaker path.
@@ -43,6 +44,9 @@ class TtsManager(private val context: Context) {
 
     /** Held while an engine is synthesising, so [release] cannot close it mid-run. */
     private val useLock = Mutex()
+    /** Includes playback and every sentence: another caller cannot interleave an alert. */
+    private val utteranceLock = Mutex()
+    private val stopGeneration = AtomicLong()
     private val scope = kotlinx.coroutines.CoroutineScope(
         kotlinx.coroutines.SupervisorJob() + Dispatchers.Default
     )
@@ -106,43 +110,62 @@ class TtsManager(private val context: Context) {
      * @return timings for the utterance, or null when the voice is unavailable, synthesis
      *   failed, or playback did not complete.
      */
-    suspend fun speak(text: String, lang: String, alert: Boolean = false): Spoken? {
-        if (text.isBlank()) return null
-
-        return try {
-            _state.value = State.Synthesizing(lang)
-            val started = android.os.SystemClock.elapsedRealtime()
-            val (pcm, sampleRate) = useLock.withLock {
-                val active = engineFor(lang) ?: return null
-                withContext(Dispatchers.Default) { active.synthesize(text) } to active.sampleRate
+    suspend fun speak(text: String, lang: String, alert: Boolean = false): Spoken? = utteranceLock.withLock {
+        if (text.isBlank()) return@withLock null
+        val generation = stopGeneration.get()
+        try {
+            // Keep the voice resident through the complete utterance, including playback.
+            useLock.withLock {
+                val active = engineFor(lang) ?: return@withLock null
+                var synthesisMs = 0L
+                var audioMs = 0L
+                val complete = playSpeechChunks(
+                    text,
+                    shouldStop = { !alert && generation != stopGeneration.get() },
+                    synthesize = { chunk ->
+                        _state.value = State.Synthesizing(lang)
+                        val started = android.os.SystemClock.elapsedRealtime()
+                        val pcm = withContext(Dispatchers.Default) { active.synthesize(chunk) }
+                        synthesisMs += android.os.SystemClock.elapsedRealtime() - started
+                        pcm
+                    },
+                    play = { pcm ->
+                        _state.value = State.Speaking(lang, alert)
+                        val played = output.play(pcm, active.sampleRate, alert)
+                        if (played) audioMs += pcm.size * 1000L / active.sampleRate
+                        played
+                    }
+                )
+                if (complete) {
+                    Log.i(TAG, "Synthesised ${audioMs}ms of [$lang] chunked speech in ${synthesisMs}ms")
+                    Spoken(synthesisMs, audioMs)
+                } else {
+                    Log.w(TAG, "TTS_INCOMPLETE[$lang]: stopped or a chunk failed; original text retained")
+                    null
+                }
             }
-            val synthesisMs = android.os.SystemClock.elapsedRealtime() - started
-            if (pcm == null || pcm.isEmpty()) {
-                Log.e(TAG, "TTS_SYNTHESIS_EMPTY[$lang] for \"$text\"")
-                return null
-            }
-
-            val audioMs = pcm.size * 1000L / sampleRate
-            Log.i(TAG, "Synthesised ${audioMs}ms of [$lang] speech in ${synthesisMs}ms")
-            _state.value = State.Speaking(lang, alert)
-            if (output.play(pcm, sampleRate, alert)) Spoken(synthesisMs, audioMs) else null
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Throwable) {
             Log.e(TAG, "SPEAK_FAILED[$lang]: ${e.javaClass.simpleName}: ${e.message}", e)
             null
         } finally {
-            _state.value = State.Idle
+            if (_state.value !is State.Unavailable) _state.value = State.Idle
         }
     }
 
-    /** Stops normal playback; an alert in flight continues. */
-    fun stop() = output.stop()
+    /** Stops all remaining normal chunks; an alert in flight continues between chunks too. */
+    fun stop() {
+        stopGeneration.incrementAndGet()
+        output.stop()
+    }
 
     /**
      * Frees the loaded voice. Playback stops at once; a synthesis in flight finishes
      * before its session is closed. The next [speak] reloads lazily.
      */
     fun release() {
-        output.stop()
+        stop()
         scope.launch {
             useLock.withLock {
                 loadLock.withLock {

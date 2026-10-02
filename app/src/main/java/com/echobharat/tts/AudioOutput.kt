@@ -7,16 +7,14 @@ import android.media.AudioManager
 import android.media.AudioTrack
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicReference
 
-/**
- * Plays synthesised PCM.
- *
- * Normal speech is interruptible — a newer message replaces whatever is playing. Alert
- * playback is not: it takes the alarm stream at maximum volume and refuses to be cut
- * short by ordinary messages (PRD §3.7).
- */
+/** Plays PCM serially. Alerts use the alarm stream and cannot be stopped by normal speech. */
 class AudioOutput(private val context: Context) {
 
     companion object {
@@ -25,129 +23,114 @@ class AudioOutput(private val context: Context) {
 
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private val current = AtomicReference<AudioTrack?>(null)
+    private val playbackLock = Mutex()
 
     @Volatile
     private var alertPlaying = false
 
-    /**
-     * Plays [samples] and suspends until playback finishes.
-     *
-     * @param alert routes to the alarm stream at max volume and blocks interruption.
-     * @return false when playback was refused or failed.
-     */
+    /** Returns only after the written frames have actually played, or playback has failed. */
     suspend fun play(samples: FloatArray, sampleRate: Int, alert: Boolean): Boolean =
-        withContext(Dispatchers.IO) {
-            if (samples.isEmpty()) return@withContext false
+        playbackLock.withLock {
+            withContext(Dispatchers.IO) {
+                if (samples.isEmpty() || sampleRate <= 0) return@withContext false
 
-            if (alertPlaying && !alert) {
-                Log.i(TAG, "Not interrupting an alert with normal speech")
-                return@withContext false
-            }
-
-            stopCurrent()
-
-            val usage = if (alert) AudioAttributes.USAGE_ALARM else AudioAttributes.USAGE_MEDIA
-            val streamType = if (alert) AudioManager.STREAM_ALARM else AudioManager.STREAM_MUSIC
-
-            var previousVolume: Int? = null
-            if (alert) {
-                previousVolume = runCatching { audioManager.getStreamVolume(streamType) }.getOrNull()
-                runCatching {
-                    audioManager.setStreamVolume(
-                        streamType,
-                        audioManager.getStreamMaxVolume(streamType),
-                        0
-                    )
-                }.onFailure {
-                    // DND or a restricted profile can refuse this; play anyway.
-                    Log.w(TAG, "Could not raise alarm volume: ${it.message}")
-                }
-            }
-
-            val minBuffer = AudioTrack.getMinBufferSize(
-                sampleRate,
-                AudioFormat.CHANNEL_OUT_MONO,
-                AudioFormat.ENCODING_PCM_FLOAT
-            )
-            if (minBuffer <= 0) {
-                Log.e(TAG, "AudioTrack.getMinBufferSize failed: $minBuffer")
-                return@withContext false
-            }
-            val bufferBytes = maxOf(minBuffer, samples.size * 4)
-
-            val track = try {
-                AudioTrack.Builder()
-                    .setAudioAttributes(
-                        AudioAttributes.Builder()
-                            .setUsage(usage)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                            .build()
-                    )
-                    .setAudioFormat(
-                        AudioFormat.Builder()
-                            .setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
-                            .setSampleRate(sampleRate)
-                            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                            .build()
-                    )
-                    .setBufferSizeInBytes(bufferBytes)
-                    .setTransferMode(AudioTrack.MODE_STREAM)
-                    .build()
-            } catch (e: Exception) {
-                Log.e(TAG, "AUDIOTRACK_INIT_FAILED: ${e.javaClass.simpleName}: ${e.message}", e)
-                return@withContext false
-            }
-
-            current.set(track)
-            if (alert) alertPlaying = true
-
-            try {
-                track.play()
-                var offset = 0
-                while (offset < samples.size) {
-                    val written = track.write(
-                        samples, offset, samples.size - offset, AudioTrack.WRITE_BLOCKING
-                    )
-                    if (written <= 0) {
-                        Log.e(TAG, "AudioTrack.write returned $written")
-                        break
+                val streamType = if (alert) AudioManager.STREAM_ALARM else AudioManager.STREAM_MUSIC
+                var previousVolume: Int? = null
+                var track: AudioTrack? = null
+                alertPlaying = alert
+                try {
+                    if (alert) {
+                        previousVolume = runCatching { audioManager.getStreamVolume(streamType) }.getOrNull()
+                        runCatching {
+                            audioManager.setStreamVolume(streamType, audioManager.getStreamMaxVolume(streamType), 0)
+                        }.onFailure {
+                            Log.w(TAG, "Could not raise alarm volume: ${it.message}")
+                        }
                     }
-                    offset += written
-                }
 
-                // MODE_STREAM keeps the tail buffered; drain before tearing down.
-                runCatching { track.stop() }
-                val durationMs = (samples.size * 1000L) / sampleRate
-                Log.i(TAG, "Played ${durationMs}ms (${if (alert) "ALERT" else "normal"}) at ${sampleRate}Hz")
-                true
-            } catch (e: Exception) {
-                Log.e(TAG, "PLAYBACK_FAILED: ${e.javaClass.simpleName}: ${e.message}", e)
-                false
-            } finally {
-                runCatching { track.release() }
-                current.compareAndSet(track, null)
-                if (alert) {
+                    val minBuffer = AudioTrack.getMinBufferSize(
+                        sampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_FLOAT
+                    )
+                    if (minBuffer <= 0) {
+                        Log.e(TAG, "AudioTrack.getMinBufferSize failed: $minBuffer")
+                        return@withContext false
+                    }
+                    val active = AudioTrack.Builder()
+                        .setAudioAttributes(
+                            AudioAttributes.Builder()
+                                .setUsage(if (alert) AudioAttributes.USAGE_ALARM else AudioAttributes.USAGE_MEDIA)
+                                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                                .build()
+                        )
+                        .setAudioFormat(
+                            AudioFormat.Builder()
+                                .setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
+                                .setSampleRate(sampleRate)
+                                .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                                .build()
+                        )
+                        // Bound the native streaming buffer, not a second copy of the entire utterance.
+                        .setBufferSizeInBytes(maxOf(minBuffer, sampleRate / 10 * 4))
+                        .setTransferMode(AudioTrack.MODE_STREAM)
+                        .build()
+                    track = active
+                    current.set(active)
+                    active.play()
+                    var offset = 0
+                    while (offset < samples.size) {
+                        ensureActive()
+                        if (current.get() !== active) return@withContext false
+                        val written = active.write(samples, offset, samples.size - offset, AudioTrack.WRITE_BLOCKING)
+                        if (written <= 0) {
+                            Log.e(TAG, "AudioTrack.write returned $written")
+                            return@withContext false
+                        }
+                        offset += written
+                    }
+
+                    // write() only queues frames. stop()+release() here discards the buffered tail.
+                    val durationMs = samples.size * 1000L / sampleRate
+                    val deadline = System.nanoTime() + (durationMs + 2_000L) * 1_000_000L
+                    while ((active.playbackHeadPosition.toLong() and 0xffffffffL) < offset) {
+                        if (current.get() !== active) return@withContext false
+                        if (System.nanoTime() >= deadline) {
+                            Log.e(TAG, "PLAYBACK_DRAIN_TIMEOUT: $offset frames queued")
+                            return@withContext false
+                        }
+                        delay(10)
+                    }
+                    Log.i(TAG, "Played ${durationMs}ms (${if (alert) "ALERT" else "normal"}) at ${sampleRate}Hz")
+                    true
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.e(TAG, "PLAYBACK_FAILED: ${e.javaClass.simpleName}: ${e.message}", e)
+                    false
+                } finally {
+                    track?.let {
+                        current.compareAndSet(it, null)
+                        runCatching { it.stop() }
+                        runCatching { it.release() }
+                    }
+                    if (alert) {
+                        previousVolume?.let { v ->
+                            runCatching { audioManager.setStreamVolume(streamType, v, 0) }
+                        }
+                    }
                     alertPlaying = false
-                    previousVolume?.let { v ->
-                        runCatching { audioManager.setStreamVolume(streamType, v, 0) }
-                    }
                 }
             }
         }
 
-    /** Stops normal playback. An in-flight alert is left alone. */
+    /** Stops normal playback. Its owner alone releases the track, including on failure. */
     fun stop() {
         if (alertPlaying) {
             Log.i(TAG, "stop() ignored during alert playback")
             return
         }
-        stopCurrent()
-    }
-
-    private fun stopCurrent() {
         current.getAndSet(null)?.let {
-            runCatching { it.stop() }
-            runCatching { it.release() }
+            runCatching { it.pause() }
+            runCatching { it.flush() }
         }
     }
 }
