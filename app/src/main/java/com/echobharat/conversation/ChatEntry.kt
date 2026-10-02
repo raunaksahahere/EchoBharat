@@ -19,7 +19,9 @@ data class ChatEntry(
     /** Only for incoming entries; resolved on this phone into its own language. */
     val translation: StoredTranslation? = null,
     val timings: Timings? = null,
-    val recordedAt: Long = System.currentTimeMillis()
+    val recordedAt: Long = System.currentTimeMillis(),
+    /** Deferred local model work; null in older history files. Never sent over the mesh. */
+    val pendingWork: PendingConversationWork? = null
 ) {
     val msgId: String get() = message.msgId
 }
@@ -40,6 +42,10 @@ data class StoredTranslation(
     /** The pivot language when two models were chained (Tamil → English → Hindi). */
     val via: String? = null
 ) {
+    // Missing packs and transient inference errors must be retried, not cached forever.
+    internal fun reusableFor(language: String): Boolean =
+        target == language && status != Status.UNAVAILABLE
+
     enum class Status {
         /** [text] is the message in [target]. */
         TRANSLATED,

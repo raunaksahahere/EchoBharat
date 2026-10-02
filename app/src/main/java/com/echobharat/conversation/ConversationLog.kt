@@ -49,7 +49,8 @@ class ConversationLog(private val maxEntries: Int = MAX_ENTRIES) {
         for ((peerId, live) in _state.value) {
             val saved = map[peerId]
             map[peerId] = if (saved == null) live else live.copy(
-                entries = saved.entries + live.entries,
+                // Retain chronological position, but live state wins for duplicate ids.
+                entries = (saved.entries + live.entries).associateBy { it.msgId }.values.toList(),
                 unread = saved.unread + live.unread
             )
         }

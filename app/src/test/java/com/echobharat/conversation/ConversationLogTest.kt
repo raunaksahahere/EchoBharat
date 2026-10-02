@@ -88,6 +88,17 @@ class ConversationLogTest {
     }
 
     @Test
+    fun `restore preserves a newer live delivery and translation for the same id`() {
+        val log = ConversationLog()
+        val saved = ChatEntry(msg("same", "me"), outgoing = true, delivery = Delivery.SENT)
+        val current = saved.copy(delivery = Delivery.DELIVERED)
+        log.record("peerA", "A", "M", current, false)
+        log.restore(listOf(Conversation("peerA", "A", "M", listOf(saved), 0, 0)))
+        assertEquals(Delivery.DELIVERED, log.entry("same")!!.delivery)
+        assertEquals(1, log.state.value["peerA"]!!.entries.size)
+    }
+
+    @Test
     fun `updates find their message across conversations`() {
         val log = ConversationLog()
         log.incoming("a1", from = "peerA")

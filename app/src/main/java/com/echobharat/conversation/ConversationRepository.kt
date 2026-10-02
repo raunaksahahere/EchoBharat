@@ -16,7 +16,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -58,14 +58,6 @@ class ConversationRepository private constructor(context: Context) {
             }
     }
 
-    private sealed interface Job {
-        /** Translate (if needed) and optionally speak a message that just arrived. */
-        data class Incoming(val msgId: String, val speak: Boolean) : Job
-        /** Bring an older message's translation up to date with the current language. */
-        data class Retranslate(val msgId: String) : Job
-        data class ReadAloud(val msgId: String) : Job
-    }
-
     private val mesh = EchoBharatMeshManager.getInstance(context)
     private val prefs = VoicePreferences.getInstance(context)
     val engines = VoiceEngines.getInstance(context)
@@ -77,7 +69,12 @@ class ConversationRepository private constructor(context: Context) {
     )
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private val jobs = Channel<Job>(Channel.UNLIMITED)
+    private val jobs = ConversationWorkQueue()
+    private val workLock = Any()
+    private var activeWork: String? = null
+
+    /** Queue pressure/failures are observable even when no conversation is open. */
+    val workStatus: StateFlow<ConversationQueueStatus> = jobs.status
 
     val conversations: StateFlow<Map<String, Conversation>> = log.state
 
@@ -98,6 +95,25 @@ class ConversationRepository private constructor(context: Context) {
             val restored = withContext(Dispatchers.IO) { store.load() }
             log.restore(restored)
             Log.i(TAG, "Restored ${restored.size} conversation(s)")
+            synchronized(workLock) { pumpWork() }
+            launch {
+                while (true) {
+                    jobs.awaitSignal()
+                    while (true) {
+                        val work = synchronized(workLock) {
+                            jobs.poll()?.also { activeWork = it.msgId }
+                        } ?: break
+                        try {
+                            runJob(work)
+                        } finally {
+                            synchronized(workLock) {
+                                activeWork = null
+                                pumpWork()
+                            }
+                        }
+                    }
+                }
+            }
 
             // Persist after the restore so the empty initial state never overwrites history.
             launch {
@@ -118,7 +134,6 @@ class ConversationRepository private constructor(context: Context) {
                 }
             }
         }
-        scope.launch { for (job in jobs) runJob(job) }
     }
 
     // ---- screens -----------------------------------------------------------------------
@@ -138,13 +153,22 @@ class ConversationRepository private constructor(context: Context) {
     fun clearConversation(peerId: String) = log.clear(peerId)
 
     fun readAloud(msgId: String) {
-        jobs.trySend(Job.ReadAloud(msgId))
+        val entry = log.entry(msgId) ?: return
+        enqueue(ConversationWork(msgId, speak = true, urgent = isUrgent(entry.message)))
     }
 
     // ---- sending -----------------------------------------------------------------------
 
     fun sendText(peer: Peer, text: String, lang: String, alert: Boolean): EchoBharatMessage =
         send(peer, mesh.compose(MessageType.TYPED_TEXT, text, lang, alert), timings = null)
+
+    /** The released utterance belongs to the app, not a navigation entry's ViewModel. */
+    fun finishSpeech(peer: Peer, lang: String, alert: Boolean) {
+        scope.launch {
+            val heard = engines.stt.stopAndTranscribe(lang) ?: return@launch
+            sendSpeech(peer, heard, lang, alert)
+        }
+    }
 
     fun sendSpeech(peer: Peer, heard: SttManager.Transcript, lang: String, alert: Boolean): EchoBharatMessage =
         send(
@@ -174,6 +198,15 @@ class ConversationRepository private constructor(context: Context) {
     private fun onIncoming(message: EchoBharatMessage) {
         val peerId = message.senderId
         val open = _activePeer.value == peerId
+        // History itself is finite. Report an unprocessed urgent record reaching retention
+        // instead of silently promising that a finite device can retain an infinite flood.
+        val entries = log.state.value[peerId]?.entries.orEmpty()
+        if (entries.size >= ConversationLog.MAX_ENTRIES && log.entry(message.msgId) == null) {
+            entries.firstOrNull()?.takeIf { it.pendingWork?.urgent == true }?.let {
+                jobs.failedUrgent(it.msgId)
+                Log.e(TAG, "URGENT_HISTORY_RETENTION: ${it.msgId}; pending work exceeded history limit")
+            }
+        }
         val added = log.record(
             peerId = peerId,
             peerName = message.senderName,
@@ -184,37 +217,77 @@ class ConversationRepository private constructor(context: Context) {
         // A copy of something already recorded: no second translation, no second reading.
         if (!added) return
 
-        val urgent = message.isAlert ||
-            message.type == MessageType.ALERT ||
-            message.type == MessageType.SOS
+        val urgent = isUrgent(message)
         val speak = urgent || (open && prefs.autoSpeak.value)
 
         // A message nobody is looking at and nobody will hear is translated when its
         // conversation is opened, so a busy mesh does not keep a 300 MB model resident
         // in the background.
-        if (open || speak) jobs.trySend(Job.Incoming(message.msgId, speak))
+        if (open || speak) enqueue(ConversationWork(message.msgId, speak, urgent))
     }
 
     private fun queueRetranslation(peerId: String) {
         val target = prefs.activeLanguage.value
         log.state.value[peerId]?.entries
             ?.takeLast(RETRANSLATE_WINDOW)
-            ?.filter { !it.outgoing && it.translation?.target != target }
-            ?.forEach { jobs.trySend(Job.Retranslate(it.msgId)) }
+            ?.filter { !it.outgoing && it.translation?.reusableFor(target) != true }
+            ?.forEach { enqueue(ConversationWork(it.msgId, urgent = isUrgent(it.message))) }
     }
 
-    private suspend fun runJob(job: Job) {
-        try {
-            when (job) {
-                is Job.Incoming -> {
-                    translate(job.msgId)
-                    if (job.speak) speak(job.msgId)
+    private fun isUrgent(message: EchoBharatMessage): Boolean =
+        message.isAlert || message.type == MessageType.ALERT || message.type == MessageType.SOS
+
+    private fun enqueue(work: ConversationWork) = synchronized(workLock) {
+        if (!log.update(work.msgId) {
+            val prior = it.pendingWork
+            it.copy(pendingWork = PendingConversationWork(
+                speak = work.speak || prior?.speak == true,
+                urgent = work.urgent || prior?.urgent == true
+            ))
+        }) return@synchronized
+        // Repeated taps during an active utterance coalesce rather than replaying it.
+        if (activeWork == work.msgId) return@synchronized
+        val pending = log.entry(work.msgId)?.pendingWork ?: return@synchronized
+        val admission = jobs.offer(ConversationWork(work.msgId, pending.speak, pending.urgent))
+        if (admission == ConversationWorkQueue.Admission.REJECTED) {
+            Log.w(TAG, "MODEL_WORK_DEFERRED: ${work.msgId}; urgent=${pending.urgent}; retained in history")
+        }
+    }
+
+    /**
+     * Only IDs in the bounded working set are queued. Overflow lives on existing encrypted
+     * history records and is promoted as slots free up, including after process restart.
+     * Persistence has the existing debounce/crash window and 500-record-per-peer retention;
+     * this is not an unlimited or exactly-once alarm service. Failed voices require retry.
+     */
+    private fun pumpWork() {
+        for (urgent in listOf(true, false)) {
+            for (conversation in log.state.value.values) {
+                for (entry in conversation.entries) {
+                    if (!jobs.hasRoom()) return
+                    val pending = entry.pendingWork ?: continue
+                    if (pending.failed || pending.urgent != urgent || entry.msgId == activeWork || jobs.contains(entry.msgId)) continue
+                    jobs.offer(ConversationWork(entry.msgId, pending.speak, pending.urgent))
                 }
-                is Job.Retranslate -> translate(job.msgId)
-                is Job.ReadAloud -> speak(job.msgId)
             }
+        }
+    }
+
+    private suspend fun runJob(job: ConversationWork) {
+        try {
+            translate(job.msgId)
+            // A read-aloud may have arrived while translation was in flight.
+            val pending = log.entry(job.msgId)?.pendingWork ?: return
+            val success = !pending.speak || speak(job.msgId)
+            log.update(job.msgId) { it.copy(pendingWork = if (success) null else pending.copy(failed = true)) }
+            if (!success && pending.urgent) jobs.failedUrgent(job.msgId)
+        } catch (e: CancellationException) {
+            // Keep the pending record for a later process; cancellation must stop the pump.
+            throw e
         } catch (e: Exception) {
-            Log.e(TAG, "Job $job failed: ${e.message}", e)
+            log.update(job.msgId) { it.copy(pendingWork = it.pendingWork?.copy(failed = true)) }
+            if (job.urgent) jobs.failedUrgent(job.msgId)
+            Log.e(TAG, "Job ${job.msgId} failed: ${e.message}", e)
         }
     }
 
@@ -222,7 +295,7 @@ class ConversationRepository private constructor(context: Context) {
         val entry = log.entry(msgId) ?: return
         if (entry.outgoing) return
         val target = prefs.activeLanguage.value
-        if (entry.translation?.target == target) return
+        if (entry.translation?.reusableFor(target) == true) return
 
         val message = entry.message
         val result = if (!Languages.isDetermined(message.srcLang)) {
@@ -253,22 +326,23 @@ class ConversationRepository private constructor(context: Context) {
      * installed. Anything else stays silent — Hindi read out by an English voice is worse
      * than nothing.
      */
-    private suspend fun speak(msgId: String) {
-        val entry = log.entry(msgId) ?: return
+    private suspend fun speak(msgId: String): Boolean {
+        val entry = log.entry(msgId) ?: return false
         val message = entry.message
         val translation = entry.translation
         val (text, lang) = when {
-            translation?.status == StoredTranslation.Status.TRANSLATED && translation.text != null ->
+            translation?.target == prefs.activeLanguage.value &&
+                translation.status == StoredTranslation.Status.TRANSLATED && translation.text != null ->
                 translation.text to translation.target
             Languages.isDetermined(message.srcLang) && engines.tts.isAvailable(message.srcLang) ->
                 message.text to message.srcLang
             else -> {
                 Log.w(TAG, "Not speaking $msgId: no voice for '${message.srcLang}' and no translation")
-                return
+                return false
             }
         }
-        val alert = message.isAlert || message.type == MessageType.ALERT || message.type == MessageType.SOS
-        val spoken = engines.tts.speak(text, lang, alert) ?: return
+        val alert = isUrgent(message)
+        val spoken = engines.tts.speak(text, lang, alert) ?: return false
         log.update(msgId) {
             it.copy(
                 timings = (it.timings ?: Timings()).copy(
@@ -277,5 +351,6 @@ class ConversationRepository private constructor(context: Context) {
                 )
             )
         }
+        return true
     }
 }

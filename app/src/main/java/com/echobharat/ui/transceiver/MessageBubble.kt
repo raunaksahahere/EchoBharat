@@ -82,6 +82,16 @@ internal fun MessageBubble(
                 Text(text = shown, style = MaterialTheme.typography.bodyLarge, color = TextPrimary)
 
                 translation?.let { TranslationNote(it, message.srcLang, message.text) }
+                entry.pendingWork?.let { pending ->
+                    Text(
+                        text = if (pending.failed) "Speech/model work failed — tap Read aloud to retry"
+                            else if (pending.urgent) "Urgent speech pending — message retained"
+                            else "Translation/speech pending — message retained",
+                        color = if (pending.failed || pending.urgent) AccentAlert else TextMuted,
+                        fontSize = 11.sp,
+                        modifier = if (pending.failed) Modifier.clickable(onClick = onReadAloud) else Modifier
+                    )
+                }
 
                 if (showTimings) entry.timings?.takeUnless { it.isEmpty }?.let { TimingsLine(it) }
 

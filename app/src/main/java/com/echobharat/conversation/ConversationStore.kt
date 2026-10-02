@@ -40,12 +40,24 @@ internal class ConversationStore(
         return try {
             val json = String(cipher.decrypt(file.readBytes(), AAD), Charsets.UTF_8)
             val snapshot = gson.fromJson(json, Snapshot::class.java)
+            require(snapshot != null && snapshot.version == VERSION) { "Unsupported history schema" }
             // Gson ignores Kotlin nullability; drop anything a future or corrupt file left
             // half-filled rather than handing the UI a null it was promised could not exist.
             @Suppress("SENSELESS_COMPARISON")
-            snapshot?.conversations.orEmpty()
-                .filter { it.peerId != null && it.entries != null }
-                .map { c -> c.copy(entries = c.entries.filter { it.message != null && it.message.msgId != null }) }
+            snapshot.conversations.orEmpty()
+                .filter { it != null && !it.peerId.isNullOrBlank() && it.entries != null &&
+                    it.peerName != null && it.deviceModel != null }
+                .map { c ->
+                    val entries = c.entries.filter { entry ->
+                        val m = entry?.message
+                        m != null && !m.msgId.isNullOrBlank() && m.type != null && m.text != null &&
+                            m.srcLang != null && m.senderId != null && m.senderName != null && m.deviceModel != null
+                    }.map { entry ->
+                        val t = entry.translation
+                        if (t != null && (t.target == null || t.status == null)) entry.copy(translation = null) else entry
+                    }
+                    c.copy(entries = entries, unread = c.unread.coerceIn(0, entries.size))
+                }
         } catch (e: Exception) {
             Log.e(TAG, "History unreadable (${e.javaClass.simpleName}); starting empty", e)
             file.renameTo(File(file.parentFile, "${file.name}.unreadable"))
@@ -59,10 +71,10 @@ internal class ConversationStore(
             val json = gson.toJson(Snapshot(VERSION, conversations.toList()))
             val tmp = File(file.parentFile, "${file.name}.tmp")
             tmp.writeBytes(cipher.encrypt(json.toByteArray(Charsets.UTF_8), AAD))
-            if (!tmp.renameTo(file)) {
-                tmp.copyTo(file, overwrite = true)
-                tmp.delete()
-            }
+            java.nio.file.Files.move(
+                tmp.toPath(), file.toPath(), java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING
+            )
         } catch (e: Exception) {
             Log.e(TAG, "Could not save history: ${e.message}", e)
         }

@@ -71,6 +71,23 @@ class ConversationStoreTest {
     }
 
     @Test
+    fun `incomplete saved messages are discarded before reaching Compose`() {
+        val file = File(temp.root, "history.bin")
+        val json = """{"version":1,"conversations":[{"peerId":"peerA","peerName":"A","deviceModel":"M","entries":[{"message":{"msgId":"bad"},"outgoing":false}],"unread":1,"updatedAt":0}]}"""
+        file.writeBytes(FakeCipher().encrypt(json.toByteArray(), "echobharat.conversations.v1".toByteArray()))
+        assertTrue(ConversationStore(file, FakeCipher()).load().single().entries.isEmpty())
+    }
+
+    @Test
+    fun `unknown history schema is quarantined rather than interpreted as current`() {
+        val file = File(temp.root, "history.bin")
+        val json = """{"version":2,"conversations":[]}"""
+        file.writeBytes(FakeCipher().encrypt(json.toByteArray(), "echobharat.conversations.v1".toByteArray()))
+        assertTrue(ConversationStore(file, FakeCipher()).load().isEmpty())
+        assertTrue(File(temp.root, "history.bin.unreadable").exists())
+    }
+
+    @Test
     fun `no file means no history`() {
         assertEquals(emptyList<Conversation>(), ConversationStore(File(temp.root, "none"), FakeCipher()).load())
     }
