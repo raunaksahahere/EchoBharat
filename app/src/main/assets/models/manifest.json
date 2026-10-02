@@ -1,0 +1,649 @@
+{
+  "_comment": [
+    "EchoBharat language-pack manifest.",
+    "",
+    "Voice packs (per language): IndicConformer STT (int8 ONNX, Apache-2.0, from",
+    "  parismitaglobalsolutions/indicconformer-sherpa-onnx) and FastPitch + HiFi-GAN TTS",
+    "  exported by model-export/ (MIT). Odia has no published STT export and so no pack.",
+    "",
+    "Translation (shared, not per language): the two IndicTrans2 distilled-200M families,",
+    "  MIT-licensed int8 ONNX conversions by TigreGotico. One model per direction covers every",
+    "  language; a phone needs the family that translates INTO its own language, plus",
+    "  indic-en to understand one Indian language from another (pivoting through English).",
+    "  The file names keep their original hi-en / en-hi spelling so existing installs and",
+    "  sideloads still resolve. 'fast' files are the KV-cache decoders: optional, ~1.7x faster",
+    "  on long sentences, and the app falls back to the cacheless decoder without them.",
+    "",
+    "A file is installable only once BOTH url and sha256 are set; until then the Model",
+    "Manager reports 'Not published' and refuses to install rather than trusting an",
+    "unverified download (Rules §19).",
+    "",
+    "Sideload during development (no publishing needed):",
+    "  adb push <file> /sdcard/Android/data/com.echobharat/files/models/<lang or mt>/<fileName>"
+  ],
+  "languages": [
+    {
+      "lang": "hi",
+      "displayName": "Hindi",
+      "nativeName": "हिन्दी",
+      "bundled": true,
+      "models": [
+        {
+          "role": "STT_ACOUSTIC",
+          "fileName": "indicconformer-hi.int8.onnx",
+          "url": "https://huggingface.co/parismitaglobalsolutions/indicconformer-sherpa-onnx/resolve/main/hi/model.int8.onnx",
+          "mirrorUrl": "",
+          "sha256": "915c71e04dd7e5378a4057fdebb252b3a587188e4e99db6d7ce0909ad5ad05fa",
+          "sizeBytes": 197595593
+        },
+        {
+          "role": "STT_TOKENS",
+          "fileName": "indicconformer-hi.tokens.txt",
+          "url": "https://huggingface.co/parismitaglobalsolutions/indicconformer-sherpa-onnx/resolve/main/tokens.txt",
+          "mirrorUrl": "",
+          "sha256": "ee60967630213f31951817ac8b402b92ec18cce80718a24a49b388e56672dfb2",
+          "sizeBytes": 67605
+        },
+        {
+          "role": "TTS_ACOUSTIC",
+          "fileName": "fastpitch-hi.int8.onnx",
+          "url": "https://huggingface.co/RaunakSaha/echobharat-models/resolve/main/hi/fastpitch-hi.int8.onnx",
+          "mirrorUrl": "",
+          "sha256": "878c2359fa9ed88dbf3d7895f380ee9ca025247c722032220970b004b0e0a476",
+          "sizeBytes": 63185953
+        },
+        {
+          "role": "TTS_VOCODER",
+          "fileName": "hifigan-hi.int8.onnx",
+          "url": "https://huggingface.co/RaunakSaha/echobharat-models/resolve/main/hi/hifigan-hi.int8.onnx",
+          "mirrorUrl": "",
+          "sha256": "2f07c88e30de4594eae9da54cf349262d0185e50172646ca20fd73f7d68383e4",
+          "sizeBytes": 22132798
+        },
+        {
+          "role": "TTS_TOKENS",
+          "fileName": "fastpitch-hi.tokens.json",
+          "url": "https://huggingface.co/RaunakSaha/echobharat-models/resolve/main/hi/fastpitch-hi.tokens.json",
+          "mirrorUrl": "",
+          "sha256": "315cd28bbbad1aa7119f59d778f28b35666cbbfc85c2f748e2146bbf8edafb35",
+          "sizeBytes": 667
+        }
+      ]
+    },
+    {
+      "lang": "en",
+      "displayName": "English",
+      "nativeName": "English (Indian)",
+      "bundled": true,
+      "models": [
+        {
+          "role": "STT_ACOUSTIC",
+          "fileName": "indicconformer-en.int8.onnx",
+          "url": "https://huggingface.co/parismitaglobalsolutions/indicconformer-sherpa-onnx/resolve/main/en/model.int8.onnx",
+          "mirrorUrl": "",
+          "sha256": "28b9261a53028a7c99ff0799f44fb53f19c78b68cc4cf40637ac9c16cb1fbc6f",
+          "sizeBytes": 174610057
+        },
+        {
+          "role": "STT_TOKENS",
+          "fileName": "indicconformer-en.tokens.txt",
+          "url": "https://huggingface.co/parismitaglobalsolutions/indicconformer-sherpa-onnx/resolve/main/en/tokens.txt",
+          "mirrorUrl": "",
+          "sha256": "89c165b98df7af718ec0e872177279bfad4ade51331f1be92753c9583a1ef30d",
+          "sizeBytes": 11433
+        },
+        {
+          "role": "TTS_ACOUSTIC",
+          "fileName": "fastpitch-en.int8.onnx",
+          "url": "https://huggingface.co/RaunakSaha/echobharat-models/resolve/main/en/fastpitch-en.int8.onnx",
+          "mirrorUrl": "",
+          "sha256": "8ae4c26e5d03ef1b72fba184f9460d2eca1e81362dd4df90839b449ca9faa805",
+          "sizeBytes": 63181344
+        },
+        {
+          "role": "TTS_VOCODER",
+          "fileName": "hifigan-en.int8.onnx",
+          "url": "https://huggingface.co/RaunakSaha/echobharat-models/resolve/main/en/hifigan-en.int8.onnx",
+          "mirrorUrl": "",
+          "sha256": "2de17f389fee6b0bcb18b445ee317833530aa86c6720e6ff49eb5b694aa27ff3",
+          "sizeBytes": 22132798
+        },
+        {
+          "role": "TTS_TOKENS",
+          "fileName": "fastpitch-en.tokens.json",
+          "url": "https://huggingface.co/RaunakSaha/echobharat-models/resolve/main/en/fastpitch-en.tokens.json",
+          "mirrorUrl": "",
+          "sha256": "721ef293934a5f7554f366c57aa48742065cf98349becb0ea66e31b5525e0989",
+          "sizeBytes": 481
+        }
+      ]
+    },
+    {
+      "lang": "bn",
+      "displayName": "Bengali",
+      "nativeName": "বাংলা",
+      "bundled": false,
+      "models": [
+        {
+          "role": "STT_ACOUSTIC",
+          "fileName": "indicconformer-bn.int8.onnx",
+          "url": "https://huggingface.co/parismitaglobalsolutions/indicconformer-sherpa-onnx/resolve/main/bn/model.int8.onnx",
+          "mirrorUrl": "",
+          "sha256": "e9120a534f69df065314be468bf15579f1b92a4cd8c07ad119b80b69244718a8",
+          "sizeBytes": 197595578
+        },
+        {
+          "role": "STT_TOKENS",
+          "fileName": "indicconformer-bn.tokens.txt",
+          "url": "https://huggingface.co/parismitaglobalsolutions/indicconformer-sherpa-onnx/resolve/main/tokens.txt",
+          "mirrorUrl": "",
+          "sha256": "ee60967630213f31951817ac8b402b92ec18cce80718a24a49b388e56672dfb2",
+          "sizeBytes": 67605
+        },
+        {
+          "role": "TTS_ACOUSTIC",
+          "fileName": "fastpitch-bn.int8.onnx",
+          "url": "https://huggingface.co/RaunakSaha/echobharat-models/resolve/main/bn/fastpitch-bn.int8.onnx",
+          "mirrorUrl": "",
+          "sha256": "20317e8840f8dad2e7e54d23170a88c2642ed60b5b931474f8d1cde3c19b8a9a",
+          "sizeBytes": 63184928
+        },
+        {
+          "role": "TTS_VOCODER",
+          "fileName": "hifigan-bn.int8.onnx",
+          "url": "https://huggingface.co/RaunakSaha/echobharat-models/resolve/main/bn/hifigan-bn.int8.onnx",
+          "mirrorUrl": "",
+          "sha256": "64839b430c5361031badcfc0b5977e6549571077644ef3c31464659d815d8692",
+          "sizeBytes": 22132798
+        },
+        {
+          "role": "TTS_TOKENS",
+          "fileName": "fastpitch-bn.tokens.json",
+          "url": "https://huggingface.co/RaunakSaha/echobharat-models/resolve/main/bn/fastpitch-bn.tokens.json",
+          "mirrorUrl": "",
+          "sha256": "d4d691b059dd8ea2e152f9875df5287ff4800f56bc06d1efe7f70d80532f459e",
+          "sizeBytes": 661
+        }
+      ]
+    },
+    {
+      "lang": "gu",
+      "displayName": "Gujarati",
+      "nativeName": "ગુજરાતી",
+      "bundled": false,
+      "models": [
+        {
+          "role": "STT_ACOUSTIC",
+          "fileName": "indicconformer-gu.int8.onnx",
+          "url": "https://huggingface.co/parismitaglobalsolutions/indicconformer-sherpa-onnx/resolve/main/gu/model.int8.onnx",
+          "mirrorUrl": "",
+          "sha256": "822ed7f0b809bbd479275bf91c913d05564b88c0d082bbcba2f37999b88cb598",
+          "sizeBytes": 197595461
+        },
+        {
+          "role": "STT_TOKENS",
+          "fileName": "indicconformer-gu.tokens.txt",
+          "url": "https://huggingface.co/parismitaglobalsolutions/indicconformer-sherpa-onnx/resolve/main/tokens.txt",
+          "mirrorUrl": "",
+          "sha256": "ee60967630213f31951817ac8b402b92ec18cce80718a24a49b388e56672dfb2",
+          "sizeBytes": 67605
+        },
+        {
+          "role": "TTS_ACOUSTIC",
+          "fileName": "fastpitch-gu.int8.onnx",
+          "url": "https://huggingface.co/RaunakSaha/echobharat-models/resolve/main/gu/fastpitch-gu.int8.onnx",
+          "mirrorUrl": "",
+          "sha256": "1f9c8c6f5a0335a75744deb7449d2c7565e7a1fd58bac5c9a148c73eb3731694",
+          "sizeBytes": 63186465
+        },
+        {
+          "role": "TTS_VOCODER",
+          "fileName": "hifigan-gu.int8.onnx",
+          "url": "https://huggingface.co/RaunakSaha/echobharat-models/resolve/main/gu/hifigan-gu.int8.onnx",
+          "mirrorUrl": "",
+          "sha256": "f4322cb3adf4855b9c0a36169e1f6fd854d2ea0841e2709d7841f10ec25ebc80",
+          "sizeBytes": 22132798
+        },
+        {
+          "role": "TTS_TOKENS",
+          "fileName": "fastpitch-gu.tokens.json",
+          "url": "https://huggingface.co/RaunakSaha/echobharat-models/resolve/main/gu/fastpitch-gu.tokens.json",
+          "mirrorUrl": "",
+          "sha256": "3f714f3d96c47236cb9c8b7c27a3423af141f0edc862e689a0a277394155ade8",
+          "sizeBytes": 674
+        }
+      ]
+    },
+    {
+      "lang": "kn",
+      "displayName": "Kannada",
+      "nativeName": "ಕನ್ನಡ",
+      "bundled": false,
+      "models": [
+        {
+          "role": "STT_ACOUSTIC",
+          "fileName": "indicconformer-kn.int8.onnx",
+          "url": "https://huggingface.co/parismitaglobalsolutions/indicconformer-sherpa-onnx/resolve/main/kn/model.int8.onnx",
+          "mirrorUrl": "",
+          "sha256": "b226ce7e4ea35b0dd66991964bd00e011b6b14b0fcdf4f7d1cccd777781c94dc",
+          "sizeBytes": 197595728
+        },
+        {
+          "role": "STT_TOKENS",
+          "fileName": "indicconformer-kn.tokens.txt",
+          "url": "https://huggingface.co/parismitaglobalsolutions/indicconformer-sherpa-onnx/resolve/main/tokens.txt",
+          "mirrorUrl": "",
+          "sha256": "ee60967630213f31951817ac8b402b92ec18cce80718a24a49b388e56672dfb2",
+          "sizeBytes": 67605
+        },
+        {
+          "role": "TTS_ACOUSTIC",
+          "fileName": "fastpitch-kn.int8.onnx",
+          "url": "https://huggingface.co/RaunakSaha/echobharat-models/resolve/main/kn/fastpitch-kn.int8.onnx",
+          "mirrorUrl": "",
+          "sha256": "6d3ea7c4092a1dd59e568fdad0fb32d3b1214719df79d5beea169ce81b9b2eb1",
+          "sizeBytes": 63187488
+        },
+        {
+          "role": "TTS_VOCODER",
+          "fileName": "hifigan-kn.int8.onnx",
+          "url": "https://huggingface.co/RaunakSaha/echobharat-models/resolve/main/kn/hifigan-kn.int8.onnx",
+          "mirrorUrl": "",
+          "sha256": "2427b7f721dc0e8173e5427ff65214dbb40b4f07afc01f94c61324d8f3597fd9",
+          "sizeBytes": 22132798
+        },
+        {
+          "role": "TTS_TOKENS",
+          "fileName": "fastpitch-kn.tokens.json",
+          "url": "https://huggingface.co/RaunakSaha/echobharat-models/resolve/main/kn/fastpitch-kn.tokens.json",
+          "mirrorUrl": "",
+          "sha256": "fd0a371be1ef5f2640587dcd41ae665a9bdc98d71d36fb4142490bacb5990fee",
+          "sizeBytes": 687
+        }
+      ]
+    },
+    {
+      "lang": "ml",
+      "displayName": "Malayalam",
+      "nativeName": "മലയാളം",
+      "bundled": false,
+      "models": [
+        {
+          "role": "STT_ACOUSTIC",
+          "fileName": "indicconformer-ml.int8.onnx",
+          "url": "https://huggingface.co/parismitaglobalsolutions/indicconformer-sherpa-onnx/resolve/main/ml/model.int8.onnx",
+          "mirrorUrl": "",
+          "sha256": "dcbdfa9f773db910508b40b703cb76c5974e8d4c6f123ea81265b40853c3f0c2",
+          "sizeBytes": 197595555
+        },
+        {
+          "role": "STT_TOKENS",
+          "fileName": "indicconformer-ml.tokens.txt",
+          "url": "https://huggingface.co/parismitaglobalsolutions/indicconformer-sherpa-onnx/resolve/main/tokens.txt",
+          "mirrorUrl": "",
+          "sha256": "ee60967630213f31951817ac8b402b92ec18cce80718a24a49b388e56672dfb2",
+          "sizeBytes": 67605
+        },
+        {
+          "role": "TTS_ACOUSTIC",
+          "fileName": "fastpitch-ml.int8.onnx",
+          "url": "https://huggingface.co/RaunakSaha/echobharat-models/resolve/main/ml/fastpitch-ml.int8.onnx",
+          "mirrorUrl": "",
+          "sha256": "ea1baa0447f49d433262de0289ce2d42a1512ee1233dea6e7d044e75bad1a7ed",
+          "sizeBytes": 63179297
+        },
+        {
+          "role": "TTS_VOCODER",
+          "fileName": "hifigan-ml.int8.onnx",
+          "url": "https://huggingface.co/RaunakSaha/echobharat-models/resolve/main/ml/hifigan-ml.int8.onnx",
+          "mirrorUrl": "",
+          "sha256": "e477235504ee0fec194ce4b8baee9bc1e191ebea0190afeafc07069e299f9564",
+          "sizeBytes": 22132798
+        },
+        {
+          "role": "TTS_TOKENS",
+          "fileName": "fastpitch-ml.tokens.json",
+          "url": "https://huggingface.co/RaunakSaha/echobharat-models/resolve/main/ml/fastpitch-ml.tokens.json",
+          "mirrorUrl": "",
+          "sha256": "399dcb44b36a498870070219ce6eda430846bb19028f73cb82f4a5c05c94a03a",
+          "sizeBytes": 591
+        }
+      ]
+    },
+    {
+      "lang": "mr",
+      "displayName": "Marathi",
+      "nativeName": "मराठी",
+      "bundled": false,
+      "models": [
+        {
+          "role": "STT_ACOUSTIC",
+          "fileName": "indicconformer-mr.int8.onnx",
+          "url": "https://huggingface.co/parismitaglobalsolutions/indicconformer-sherpa-onnx/resolve/main/mr/model.int8.onnx",
+          "mirrorUrl": "",
+          "sha256": "1ea81e55c4b9b12624c9d02a5b9c1b6f7c871c78a55ff52d333f81cb5136eaf2",
+          "sizeBytes": 197595593
+        },
+        {
+          "role": "STT_TOKENS",
+          "fileName": "indicconformer-mr.tokens.txt",
+          "url": "https://huggingface.co/parismitaglobalsolutions/indicconformer-sherpa-onnx/resolve/main/tokens.txt",
+          "mirrorUrl": "",
+          "sha256": "ee60967630213f31951817ac8b402b92ec18cce80718a24a49b388e56672dfb2",
+          "sizeBytes": 67605
+        },
+        {
+          "role": "TTS_ACOUSTIC",
+          "fileName": "fastpitch-mr.int8.onnx",
+          "url": "https://huggingface.co/RaunakSaha/echobharat-models/resolve/main/mr/fastpitch-mr.int8.onnx",
+          "mirrorUrl": "",
+          "sha256": "674c393740a4ef281ac204d8fbc5a93cebfbad2e7e83ba395febfceee3c0828e",
+          "sizeBytes": 63199779
+        },
+        {
+          "role": "TTS_VOCODER",
+          "fileName": "hifigan-mr.int8.onnx",
+          "url": "https://huggingface.co/RaunakSaha/echobharat-models/resolve/main/mr/hifigan-mr.int8.onnx",
+          "mirrorUrl": "",
+          "sha256": "6aedc7e3b5fd56237c0becaed600adb1fe8308398cfc2955bf78135f1868f5fb",
+          "sizeBytes": 22132798
+        },
+        {
+          "role": "TTS_TOKENS",
+          "fileName": "fastpitch-mr.tokens.json",
+          "url": "https://huggingface.co/RaunakSaha/echobharat-models/resolve/main/mr/fastpitch-mr.tokens.json",
+          "mirrorUrl": "",
+          "sha256": "5767c4ff4b9f2f9b9d555a17af4ef08ec06a6698d0bf01d52818238064946be8",
+          "sizeBytes": 842
+        }
+      ]
+    },
+    {
+      "lang": "or",
+      "displayName": "Odia",
+      "nativeName": "ଓଡ଼ିଆ",
+      "bundled": false,
+      "models": [
+        {
+          "role": "STT_ACOUSTIC",
+          "fileName": "indicconformer-or.int8.onnx",
+          "url": "",
+          "mirrorUrl": "",
+          "sha256": "",
+          "sizeBytes": 0
+        },
+        {
+          "role": "STT_TOKENS",
+          "fileName": "indicconformer-or.tokens.txt",
+          "url": "",
+          "mirrorUrl": "",
+          "sha256": "",
+          "sizeBytes": 0
+        },
+        {
+          "role": "TTS_ACOUSTIC",
+          "fileName": "fastpitch-or.int8.onnx",
+          "url": "",
+          "mirrorUrl": "",
+          "sha256": "",
+          "sizeBytes": 0
+        },
+        {
+          "role": "TTS_VOCODER",
+          "fileName": "hifigan-or.int8.onnx",
+          "url": "",
+          "mirrorUrl": "",
+          "sha256": "",
+          "sizeBytes": 0
+        },
+        {
+          "role": "TTS_TOKENS",
+          "fileName": "fastpitch-or.tokens.json",
+          "url": "",
+          "mirrorUrl": "",
+          "sha256": "",
+          "sizeBytes": 0
+        }
+      ]
+    },
+    {
+      "lang": "ta",
+      "displayName": "Tamil",
+      "nativeName": "தமிழ்",
+      "bundled": false,
+      "models": [
+        {
+          "role": "STT_ACOUSTIC",
+          "fileName": "indicconformer-ta.int8.onnx",
+          "url": "https://huggingface.co/parismitaglobalsolutions/indicconformer-sherpa-onnx/resolve/main/ta/model.int8.onnx",
+          "mirrorUrl": "",
+          "sha256": "abb7b59d706b8d27ba3fb5e5e3db7671c9e1a09bf7bc6122de507c60030e65fb",
+          "sizeBytes": 197595513
+        },
+        {
+          "role": "STT_TOKENS",
+          "fileName": "indicconformer-ta.tokens.txt",
+          "url": "https://huggingface.co/parismitaglobalsolutions/indicconformer-sherpa-onnx/resolve/main/tokens.txt",
+          "mirrorUrl": "",
+          "sha256": "ee60967630213f31951817ac8b402b92ec18cce80718a24a49b388e56672dfb2",
+          "sizeBytes": 67605
+        },
+        {
+          "role": "TTS_ACOUSTIC",
+          "fileName": "fastpitch-ta.int8.onnx",
+          "url": "https://huggingface.co/RaunakSaha/echobharat-models/resolve/main/ta/fastpitch-ta.int8.onnx",
+          "mirrorUrl": "",
+          "sha256": "1e88c1838486b3974f754767cb7065719961c59fb9616c30b7484f90919133ec",
+          "sizeBytes": 63168544
+        },
+        {
+          "role": "TTS_VOCODER",
+          "fileName": "hifigan-ta.int8.onnx",
+          "url": "https://huggingface.co/RaunakSaha/echobharat-models/resolve/main/ta/hifigan-ta.int8.onnx",
+          "mirrorUrl": "",
+          "sha256": "479c0f771f0a6d28399a9f36d81cc81675d56eb5588914b1b094a8997555bd8f",
+          "sizeBytes": 22132798
+        },
+        {
+          "role": "TTS_TOKENS",
+          "fileName": "fastpitch-ta.tokens.json",
+          "url": "https://huggingface.co/RaunakSaha/echobharat-models/resolve/main/ta/fastpitch-ta.tokens.json",
+          "mirrorUrl": "",
+          "sha256": "aba0d6f7807becb5acc17b681ce44f99673a9ef554aad798d1b73fd2d518b2f2",
+          "sizeBytes": 442
+        }
+      ]
+    },
+    {
+      "lang": "te",
+      "displayName": "Telugu",
+      "nativeName": "తెలుగు",
+      "bundled": false,
+      "models": [
+        {
+          "role": "STT_ACOUSTIC",
+          "fileName": "indicconformer-te.int8.onnx",
+          "url": "https://huggingface.co/parismitaglobalsolutions/indicconformer-sherpa-onnx/resolve/main/te/model.int8.onnx",
+          "mirrorUrl": "",
+          "sha256": "710f176e33080f1be84b4f38bb5f33be3f522dcf4f191bf4d5cc89f7a85924f3",
+          "sizeBytes": 197595693
+        },
+        {
+          "role": "STT_TOKENS",
+          "fileName": "indicconformer-te.tokens.txt",
+          "url": "https://huggingface.co/parismitaglobalsolutions/indicconformer-sherpa-onnx/resolve/main/tokens.txt",
+          "mirrorUrl": "",
+          "sha256": "ee60967630213f31951817ac8b402b92ec18cce80718a24a49b388e56672dfb2",
+          "sizeBytes": 67605
+        },
+        {
+          "role": "TTS_ACOUSTIC",
+          "fileName": "fastpitch-te.int8.onnx",
+          "url": "https://huggingface.co/RaunakSaha/echobharat-models/resolve/main/te/fastpitch-te.int8.onnx",
+          "mirrorUrl": "",
+          "sha256": "995312b833bbf17bc8c1a4281f9a0e141706d77f782a812109ec992bef8e6869",
+          "sizeBytes": 63179809
+        },
+        {
+          "role": "TTS_VOCODER",
+          "fileName": "hifigan-te.int8.onnx",
+          "url": "https://huggingface.co/RaunakSaha/echobharat-models/resolve/main/te/hifigan-te.int8.onnx",
+          "mirrorUrl": "",
+          "sha256": "e477235504ee0fec194ce4b8baee9bc1e191ebea0190afeafc07069e299f9564",
+          "sizeBytes": 22132798
+        },
+        {
+          "role": "TTS_TOKENS",
+          "fileName": "fastpitch-te.tokens.json",
+          "url": "https://huggingface.co/RaunakSaha/echobharat-models/resolve/main/te/fastpitch-te.tokens.json",
+          "mirrorUrl": "",
+          "sha256": "f14587cf5a525a83822de7b56d1d18836e3e1764bc650d94b6558d14d3771726",
+          "sizeBytes": 586
+        }
+      ]
+    }
+  ],
+  "translation": {
+    "families": [
+      {
+        "id": "indic-en",
+        "title": "Indian languages → English",
+        "files": [
+          {
+            "role": "MT_ENCODER",
+            "fileName": "mt-hi-en-encoder.int8.onnx",
+            "url": "https://huggingface.co/RaunakSaha/echobharat-models/resolve/main/mt/en/mt-hi-en-encoder.int8.onnx",
+            "mirrorUrl": "",
+            "sha256": "4af34ee8e31beb787e08badcb3e9aa3808bbd6d8d4c590d81cb0b73c8f640101",
+            "sizeBytes": 121038144
+          },
+          {
+            "role": "MT_DECODER",
+            "fileName": "mt-hi-en-decoder.int8.onnx",
+            "url": "https://huggingface.co/RaunakSaha/echobharat-models/resolve/main/mt/en/mt-hi-en-decoder.int8.onnx",
+            "mirrorUrl": "",
+            "sha256": "70d1421b541394148b4ba458bcedf8e53639bb64c183a9bb1de81ba879c0f15e",
+            "sizeBytes": 111123188
+          },
+          {
+            "role": "MT_BPE_SRC",
+            "fileName": "mt-hi-en-bpe-src.tsv",
+            "url": "https://huggingface.co/RaunakSaha/echobharat-models/resolve/main/mt/en/mt-hi-en-bpe-src.tsv",
+            "mirrorUrl": "",
+            "sha256": "d32b97f1b2176c717d7989fada51aa91cf21b4311343fa8a08c8f42a606453f1",
+            "sizeBytes": 3661683
+          },
+          {
+            "role": "MT_BPE_TGT",
+            "fileName": "mt-hi-en-bpe-tgt.tsv",
+            "url": "https://huggingface.co/RaunakSaha/echobharat-models/resolve/main/mt/en/mt-hi-en-bpe-tgt.tsv",
+            "mirrorUrl": "",
+            "sha256": "f8b97576585956a3e881fcc9343fa5d88588e2432b1bf6f866b46e43e2750d88",
+            "sizeBytes": 654711
+          },
+          {
+            "role": "MT_META",
+            "fileName": "mt-hi-en-meta.json",
+            "url": "https://huggingface.co/RaunakSaha/echobharat-models/resolve/main/mt/en/mt-hi-en-meta.json",
+            "mirrorUrl": "",
+            "sha256": "d484169414ac1e6a743fa6e81ca6ed2e114f0ae1ae8f6b4034f9773b120a8faf",
+            "sizeBytes": 216
+          }
+        ],
+        "fast": [
+          {
+            "role": "MT_DECODER_PAST",
+            "fileName": "mt-hi-en-decoder-past.int8.onnx",
+            "url": "https://huggingface.co/TigreGotico/indictrans2-indic-en-dist-200M-onnx/resolve/12ead62b4a390603b6c84dc12e1cf0a17e97639b/int8/decoder_with_past_model.onnx",
+            "mirrorUrl": "",
+            "sha256": "ac79f09bd222d9c136096165b1749cd28210cc4514dc1ecf8061c27e4c7ddf2b",
+            "sizeBytes": 101393028
+          }
+        ]
+      },
+      {
+        "id": "en-indic",
+        "title": "English → Indian languages",
+        "files": [
+          {
+            "role": "MT_ENCODER",
+            "fileName": "mt-en-hi-encoder.int8.onnx",
+            "url": "https://huggingface.co/RaunakSaha/echobharat-models/resolve/main/mt/hi/mt-en-hi-encoder.int8.onnx",
+            "mirrorUrl": "",
+            "sha256": "e3af222c3235519a6a87e67e19482f927badd643b1fedc76dd0f39d6209ab8b1",
+            "sizeBytes": 74761536
+          },
+          {
+            "role": "MT_DECODER",
+            "fileName": "mt-en-hi-decoder.int8.onnx",
+            "url": "https://huggingface.co/RaunakSaha/echobharat-models/resolve/main/mt/hi/mt-en-hi-decoder.int8.onnx",
+            "mirrorUrl": "",
+            "sha256": "4eccdf167bf8da2d70a031f89c75472a72ba20e849afe89b87e195f9ac5025a3",
+            "sizeBytes": 203668211
+          },
+          {
+            "role": "MT_BPE_SRC",
+            "fileName": "mt-en-hi-bpe-src.tsv",
+            "url": "https://huggingface.co/RaunakSaha/echobharat-models/resolve/main/mt/hi/mt-en-hi-bpe-src.tsv",
+            "mirrorUrl": "",
+            "sha256": "6835801f9bc559e0328208f2bed03dfc6131ea43a665f38e0d157850b47ff048",
+            "sizeBytes": 654754
+          },
+          {
+            "role": "MT_BPE_TGT",
+            "fileName": "mt-en-hi-bpe-tgt.tsv",
+            "url": "https://huggingface.co/RaunakSaha/echobharat-models/resolve/main/mt/hi/mt-en-hi-bpe-tgt.tsv",
+            "mirrorUrl": "",
+            "sha256": "aa6dcca9807f91ef1045701bdd9b1ed4e39ef287a73c915b4fcd4a11692e253d",
+            "sizeBytes": 3661598
+          },
+          {
+            "role": "MT_META",
+            "fileName": "mt-en-hi-meta.json",
+            "url": "https://huggingface.co/RaunakSaha/echobharat-models/resolve/main/mt/hi/mt-en-hi-meta.json",
+            "mirrorUrl": "",
+            "sha256": "0f525caee0153934369dfd700b359f1d88600812b3506fcdb4f01725ab0bda6e",
+            "sizeBytes": 217
+          }
+        ],
+        "fast": [
+          {
+            "role": "MT_DECODER_PAST",
+            "fileName": "mt-en-hi-decoder-past.int8.onnx",
+            "url": "https://huggingface.co/TigreGotico/indictrans2-en-indic-dist-200M-onnx/resolve/4c9aeb9ed0d5917b04b1bb542e03726e5b1ce27e/int8/decoder_with_past_model.onnx",
+            "mirrorUrl": "",
+            "sha256": "6585dc115b3128d9d1b6bfdbc970afc10947217fdbe5b493a565a59e490c5053",
+            "sizeBytes": 193938051
+          }
+        ]
+      }
+    ],
+    "_tagsComment": "FLORES language-tag ids, read from each family's dict.SRC.json. They differ by direction (hin_Deva is 8 one way and 15 the other), so hardcoding one silently corrupts the other.",
+    "tags": {
+      "indic-en": {
+        "eng_Latn": 4,
+        "hin_Deva": 8,
+        "ben_Beng": 10,
+        "guj_Gujr": 17,
+        "kan_Knda": 14,
+        "mal_Mlym": 13,
+        "mar_Deva": 18,
+        "ory_Orya": 48,
+        "tam_Taml": 16,
+        "tel_Telu": 15
+      },
+      "en-indic": {
+        "eng_Latn": 4,
+        "hin_Deva": 15,
+        "ben_Beng": 17,
+        "guj_Gujr": 28,
+        "kan_Knda": 20,
+        "mal_Mlym": 19,
+        "mar_Deva": 29,
+        "ory_Orya": 69,
+        "tam_Taml": 27,
+        "tel_Telu": 21
+      }
+    }
+  }
+}
