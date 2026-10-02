@@ -32,6 +32,9 @@
     <!-- Microphone for voice input / VAD / STT -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
+    <!-- Required to raise and restore the alarm stream for urgent speech. -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+
     <!-- Haptic feedback permission -->
     <uses-permission android:name="android.permission.VIBRATE" />
 

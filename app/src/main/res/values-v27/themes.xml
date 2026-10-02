@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.EchoBharat" parent="Theme.EchoBharat.Base">
+        <item name="android:navigationBarColor">#F4F1EC</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+</resources>

@@ -1,12 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.EchoBharat" parent="android:Theme.Material.Light.NoActionBar">
+    <style name="Theme.EchoBharat.Base" parent="android:Theme.Material.Light.NoActionBar">
         <!-- Matches SurfaceCard/SurfaceBg in Color.kt so the system chrome does not
              flash dark before Compose draws. -->
         <item name="android:statusBarColor">#FFFFFF</item>
-        <item name="android:navigationBarColor">#F4F1EC</item>
+        <!-- API 26 cannot request dark navigation icons: keep a dark background. -->
+        <item name="android:navigationBarColor">#1A1A1A</item>
         <item name="android:windowBackground">#F4F1EC</item>
         <item name="android:windowLightStatusBar">true</item>
-        <item name="android:windowLightNavigationBar">true</item>
     </style>
+    <style name="Theme.EchoBharat" parent="Theme.EchoBharat.Base" />
 </resources>
