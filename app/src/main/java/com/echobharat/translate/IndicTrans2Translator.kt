@@ -74,10 +74,7 @@ class IndicTrans2Translator private constructor(
 
         val prepared = IndicTransText.preprocess(text, source)
         val pieces = srcTokenizer.encode(prepared.text)
-        val body = if (pieces.size > maxSourceTokens - 3) {
-            Log.w(TAG, "source truncated from ${pieces.size} to ${maxSourceTokens - 3} tokens")
-            pieces.copyOfRange(0, maxSourceTokens - 3)
-        } else pieces
+        val body = sourceBody(pieces, maxSourceTokens)
 
         val srcIds = LongArray(body.size + 3)
         srcIds[0] = srcTag.toLong()
@@ -113,9 +110,8 @@ class IndicTrans2Translator private constructor(
 
     /** Re-runs the whole prefix every step. Quadratic, but needs only the base decoder. */
     private fun decodeCacheless(hidden: OnnxTensor, mask: OnnxTensor): List<Int> {
-        val generated = ArrayList<Int>(MAX_NEW_TOKENS)
         var prefix = longArrayOf(DECODER_START.toLong())
-        for (step in 0 until MAX_NEW_TOKENS) {
+        return decodeTokens(MAX_NEW_TOKENS) {
             val next = OnnxTensor.createTensor(
                 env, LongBuffer.wrap(prefix), longArrayOf(1, prefix.size.toLong())
             ).use { decIn ->
@@ -128,12 +124,12 @@ class IndicTrans2Translator private constructor(
                     // Only the logits: materialising the 72 cache tensors would be pure cost.
                     setOf("logits")
                 ).use { out -> argmaxLastStep(out.get(0).value) }
-            } ?: break
-            if (next == SpmBpeTokenizer.EOS) break
-            generated.add(next)
-            prefix = prefix.copyOf(prefix.size + 1).also { it[it.size - 1] = next.toLong() }
+            }
+            if (next != null) {
+                prefix = prefix.copyOf(prefix.size + 1).also { it[it.size - 1] = next.toLong() }
+            }
+            next
         }
-        return generated
     }
 
     /**
@@ -142,7 +138,6 @@ class IndicTrans2Translator private constructor(
      * result owns the decoder cache the next step reads, and is closed once superseded.
      */
     private fun decodeCached(past: OrtSession, hidden: OnnxTensor, mask: OnnxTensor): List<Int> {
-        val generated = ArrayList<Int>(MAX_NEW_TOKENS)
         startToken().use { start ->
             decoder.run(
                 mapOf(
@@ -152,14 +147,16 @@ class IndicTrans2Translator private constructor(
                 )
             ).use { first ->
                 val firstOut = first.associate { it.key to it.value }
-                var next = argmaxLastStep(firstOut["logits"]?.value) ?: return generated
                 var cache: Map<String, OnnxValue> = firstOut
                 var previous: OrtSession.Result? = null
+                var previousToken: Int? = null
                 try {
-                    while (next != SpmBpeTokenizer.EOS && generated.size < MAX_NEW_TOKENS) {
-                        generated.add(next)
+                    return decodeTokens(MAX_NEW_TOKENS) {
+                        if (previousToken == null) {
+                            argmaxLastStep(firstOut["logits"]?.value).also { previousToken = it }
+                        } else {
                         val step = OnnxTensor.createTensor(
-                            env, LongBuffer.wrap(longArrayOf(next.toLong())), longArrayOf(1, 1)
+                            env, LongBuffer.wrap(longArrayOf(previousToken!!.toLong())), longArrayOf(1, 1)
                         )
                         val result = step.use {
                             val feed = HashMap<String, OnnxTensor>(pastInputs.size + 2)
@@ -178,14 +175,14 @@ class IndicTrans2Translator private constructor(
                         previous?.close()
                         previous = result
                         cache = out
-                        next = argmaxLastStep(out["logits"]?.value) ?: break
+                        argmaxLastStep(out["logits"]?.value).also { previousToken = it }
+                        }
                     }
                 } finally {
                     previous?.close()
                 }
             }
         }
-        return generated
     }
 
     /** logits arrive as [1][T][V]; only the last position matters for greedy decoding. */
@@ -196,6 +193,7 @@ class IndicTrans2Translator private constructor(
             return null
         }
         val last = batch.firstOrNull()?.lastOrNull() ?: return null
+        if (last.isEmpty() || last.any { !it.isFinite() }) return null
         var bestIdx = 0
         var bestVal = Float.NEGATIVE_INFINITY
         for (i in last.indices) {
@@ -217,6 +215,26 @@ class IndicTrans2Translator private constructor(
         private const val TAG = "IndicTrans2"
         private const val DECODER_START = 2
         private const val MAX_NEW_TOKENS = 128
+
+        /** Shared termination policy for cached and cacheless greedy decoding. */
+        internal fun decodeTokens(budget: Int, nextToken: () -> Int?): List<Int> {
+            require(budget > 0) { "Invalid decoder token budget" }
+            val generated = ArrayList<Int>(budget)
+            repeat(budget) {
+                val next = nextToken() ?: error("Invalid decoder logits; refusing a partial translation")
+                if (next == SpmBpeTokenizer.EOS) return generated
+                generated.add(next)
+            }
+            error("Decoder token budget exhausted before EOS; refusing a partial translation")
+        }
+
+        internal fun sourceBody(pieces: IntArray, maxSourceTokens: Int): IntArray {
+            require(maxSourceTokens >= 3) { "Invalid source token limit" }
+            require(pieces.size <= maxSourceTokens - 3) {
+                "Source exceeds the model's token limit; refusing a partial translation"
+            }
+            return pieces
+        }
 
         /** Files a family needs; [ModelRole.MT_DECODER_PAST] is optional. */
         val REQUIRED = listOf(
@@ -250,23 +268,34 @@ class IndicTrans2Translator private constructor(
                 }
             }
 
+            // Validate token data before allocating hundreds of MB of native sessions.
+            val srcTokenizer = SpmBpeTokenizer.load(files.getValue(ModelRole.MT_BPE_SRC), meta.getInt("srcVocabSize"))
+            val tgtTokenizer = SpmBpeTokenizer.load(files.getValue(ModelRole.MT_BPE_TGT), meta.getInt("tgtVocabSize"))
             val env = OrtEnvironment.getEnvironment()
-            val opts = OrtSession.SessionOptions().apply {
-                setIntraOpNumThreads(threads)
-                setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+            val opened = ArrayList<OrtSession>()
+            OrtSession.SessionOptions().use { opts ->
+                opts.setIntraOpNumThreads(threads)
+                opts.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+                try {
+                    fun session(role: ModelRole): OrtSession =
+                        env.createSession(files.getValue(role).absolutePath, opts).also { opened.add(it) }
+                    IndicTrans2Translator(
+                        family = family,
+                        encoder = session(ModelRole.MT_ENCODER),
+                        decoder = session(ModelRole.MT_DECODER),
+                        decoderPast = files[ModelRole.MT_DECODER_PAST]?.takeIf { it.isFile }?.let {
+                            session(ModelRole.MT_DECODER_PAST)
+                        },
+                        srcTokenizer = srcTokenizer,
+                        tgtTokenizer = tgtTokenizer,
+                        tags = tags,
+                        maxSourceTokens = meta.optInt("maxSourceTokens", 256)
+                    )
+                } catch (e: Throwable) {
+                    opened.asReversed().forEach { runCatching { it.close() } }
+                    throw e
+                }
             }
-            val past = files[ModelRole.MT_DECODER_PAST]?.takeIf { it.isFile }
-
-            IndicTrans2Translator(
-                family = family,
-                encoder = env.createSession(files.getValue(ModelRole.MT_ENCODER).absolutePath, opts),
-                decoder = env.createSession(files.getValue(ModelRole.MT_DECODER).absolutePath, opts),
-                decoderPast = past?.let { env.createSession(it.absolutePath, opts) },
-                srcTokenizer = SpmBpeTokenizer.load(files.getValue(ModelRole.MT_BPE_SRC), meta.getInt("srcVocabSize")),
-                tgtTokenizer = SpmBpeTokenizer.load(files.getValue(ModelRole.MT_BPE_TGT), meta.getInt("tgtVocabSize")),
-                tags = tags,
-                maxSourceTokens = meta.optInt("maxSourceTokens", 256)
-            )
         }
     }
 }

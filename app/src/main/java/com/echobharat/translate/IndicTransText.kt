@@ -119,21 +119,26 @@ object IndicTransText {
         return sb.toString()
     }
 
-    private val FLAGS = Pattern.UNICODE_CHARACTER_CLASS
+    // Android's ICU patterns already use Unicode classes and reject Java's U flag.
+    // Spell the classes out so Android and the desktop reference use the same contract.
+    private const val UNICODE_SPACE = "\\p{Z}\\t\\n\\u000B\\f\\r\\u0085"
+    private fun unicodePattern(pattern: String): Pattern = Pattern.compile(
+        pattern.replace("\\w", "[\\p{IsAlphabetic}\\p{M}\\p{Nd}\\p{Pc}\\u200C\\u200D]")
+            .replace("\\d", "\\p{Nd}")
+            .replace("\\s", "[$UNICODE_SPACE]")
+    )
 
-    private val EMAIL = Pattern.compile("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Z|a-z]{2,}", FLAGS)
+    private val EMAIL = Pattern.compile("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Z|a-z]{2,}")
 
     // The reference writes the last group as (?:[...]+)+, which matches the same strings
     // but backtracks exponentially on a long miss; the single + is equivalent.
-    private val URL = Pattern.compile(
-        "\\b(?<![\\w/.])(?:(?:https?|ftp)://)?(?:(?:[\\w-]+\\.)+(?!\\.))[\\w/\\-?#&=%.]+(?!\\.\\w+)\\b",
-        FLAGS
+    private val URL = unicodePattern(
+        "\\b(?<![\\w/.])(?:(?:https?|ftp)://)?(?:(?:[\\w-]+\\.)+(?!\\.))[\\w/\\-?#&=%.]+(?!\\.\\w+)\\b"
     )
-    private val NUMERAL = Pattern.compile(
-        "(~?\\d+\\.?\\d*\\s?%?\\s?-?\\s?~?\\d+\\.?\\d*\\s?%|~?\\d+%|\\d+[-/.,:']\\d+[-/.,:'+]\\d+(?:\\.\\d+)?|\\d+[-/.:'+]\\d+(?:\\.\\d+)?)",
-        FLAGS
+    private val NUMERAL = unicodePattern(
+        "(~?\\d+\\.?\\d*\\s?%?\\s?-?\\s?~?\\d+\\.?\\d*\\s?%|~?\\d+%|\\d+[-/.,:']\\d+[-/.,:'+]\\d+(?:\\.\\d+)?|\\d+[-/.:'+]\\d+(?:\\.\\d+)?)"
     )
-    private val OTHER = Pattern.compile("[A-Za-z0-9]*[#|@]\\w+", FLAGS)
+    private val OTHER = unicodePattern("[A-Za-z0-9]*[#|@]\\w+")
 
     /** Forms the model has been seen to mangle a placeholder into, per the reference. */
     private val INDIC_FAILURE_CASES = listOf(
@@ -422,7 +427,7 @@ object IndicTransText {
         private const val ALPHA = "\\p{IsAlphabetic}\\u094D\\u093C"
         private const val ALNUM = "$ALPHA\\p{Nd}"
 
-        private val PAD_NOT_ALNUM = Regex("(?U)([^$ALNUM\\s.'`,\\-])")
+        private val PAD_NOT_ALNUM = Regex("([^$ALNUM$UNICODE_SPACE.'`,\\-])")
         private val APOSTROPHE_RULES = listOf(
             Regex("([^$ALPHA])'([^$ALPHA])") to "$1 ' $2",
             Regex("([^$ALPHA\\p{N}])'([$ALPHA])") to "$1 ' $2",
