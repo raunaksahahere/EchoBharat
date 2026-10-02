@@ -5,6 +5,7 @@ import com.echobharat.mesh.protocol.BitchatPacket
 import com.echobharat.mesh.protocol.MessageType
 import com.echobharat.mesh.protocol.MessagePadding
 import com.echobharat.mesh.model.FragmentPayload
+import com.echobharat.util.toHexString
 import kotlinx.coroutines.*
 import java.util.concurrent.ConcurrentHashMap
 
@@ -70,7 +71,10 @@ class FragmentManager {
      * is truncated by the radio without an error.
      */
     fun createFragments(packet: BitchatPacket, maxFragments: Int, maxWireBytes: Int): List<BitchatPacket> {
-        val wireLimit = maxWireBytes.coerceIn(MIN_WIRE_BYTES, FRAGMENT_SIZE_THRESHOLD)
+        // Never enlarge the caller's negotiated BLE limit; an unsupported link must fail
+        // closed rather than silently truncate every frame on the radio.
+        if (maxWireBytes < MIN_WIRE_BYTES) return emptyList()
+        val wireLimit = maxWireBytes.coerceAtMost(FRAGMENT_SIZE_THRESHOLD)
         try {
             if (maxFragments !in 1..0xFFFF) {
                 Log.w(TAG, "Rejecting invalid outbound fragment limit: $maxFragments")
@@ -196,7 +200,11 @@ class FragmentManager {
             }
 
             // iOS: let fragmentID = packet.payload[0..<8].map { String(format: "%02x", $0) }.joined()
-            val fragmentIDString = fragmentPayload.getFragmentIDString()
+            // Fragment IDs are not globally unique or authenticated. Isolate transfers by
+            // their outer endpoints, then verify the inner endpoints before dispatch.
+            val fragmentIDString = "${packet.senderID.toHexString()}:" +
+                "${packet.recipientID?.toHexString()}:${fragmentPayload.getFragmentIDString()}"
+            if (fragmentPayload.originalType == MessageType.FRAGMENT.value) return null
 
             val maxFragments = com.echobharat.util.AppConstants.Fragmentation.MAX_FRAGMENTS_PER_ID
             if (fragmentPayload.total > maxFragments) {
@@ -244,7 +252,9 @@ class FragmentManager {
                     return null
                 }
 
-                val oldEntrySize = fragmentMap[fragmentPayload.index]?.size ?: 0
+                // Repeated fragments may be relayed, but must never overwrite accepted data.
+                if (fragmentMap.containsKey(fragmentPayload.index)) return null
+                val oldEntrySize = 0
                 val newSize = currentSize - oldEntrySize + fragmentPayload.data.size
                 val maxTotalBytes = com.echobharat.util.AppConstants.Fragmentation.MAX_FRAGMENT_TOTAL_BYTES
                 if (newSize > maxTotalBytes) {
@@ -278,15 +288,15 @@ class FragmentManager {
                     }
 
                     val originalPacket = BitchatPacket.fromBinaryData(reassembledData.toByteArray())
-                    if (originalPacket != null) {
-                        removeFragmentSetLocked(fragmentIDString)
-
-                        val suppressedTtlPacket = originalPacket.copy(ttl = 0u.toUByte())
-                        return suppressedTtlPacket
-                    } else {
-                        val metadata = fragmentMetadata[fragmentIDString]
-                        Log.e(TAG, "Failed to decode reassembled packet (type=${metadata?.first}, total=${metadata?.second})")
+                    removeFragmentSetLocked(fragmentIDString)
+                    if (originalPacket != null &&
+                        originalPacket.type == fragmentPayload.originalType &&
+                        originalPacket.senderID.contentEquals(packet.senderID) &&
+                        originalPacket.recipientID.contentEquals(packet.recipientID)
+                    ) {
+                        return originalPacket.copy(ttl = 0u.toUByte())
                     }
+                    Log.w(TAG, "Rejecting invalid or endpoint-mismatched reassembled packet")
                 }
             }
             

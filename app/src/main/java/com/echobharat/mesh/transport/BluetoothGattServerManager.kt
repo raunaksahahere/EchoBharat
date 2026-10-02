@@ -40,7 +40,30 @@ class BluetoothGattServerManager(
     private val bluetoothManager: BluetoothManager = 
         context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
     private val bluetoothAdapter: BluetoothAdapter? = bluetoothManager.adapter
-    private val bleAdvertiser: BluetoothLeAdvertiser? = bluetoothAdapter?.bluetoothLeAdvertiser
+    private val bleAdvertiser: BluetoothLeAdvertiser?
+        get() = try { bluetoothAdapter?.bluetoothLeAdvertiser } catch (_: SecurityException) { null }
+
+    private fun isBluetoothEnabled(): Boolean = try {
+        bluetoothAdapter?.isEnabled == true
+    } catch (_: SecurityException) {
+        false
+    }
+
+    private fun canUseServer(): Boolean {
+        if (!isActive) return false
+        if (permissionManager.hasBluetoothPermissions()) return true
+        stop()
+        return false
+    }
+
+    private fun sendResponse(device: BluetoothDevice, requestId: Int, status: Int) {
+        if (!canUseServer()) return
+        try {
+            gattServer?.sendResponse(device, requestId, status, 0, null)
+        } catch (_: SecurityException) {
+            stop()
+        }
+    }
     
     // GATT server for peripheral mode
     private var gattServer: BluetoothGattServer? = null
@@ -71,6 +94,8 @@ class BluetoothGattServerManager(
     fun disconnectDevice(device: BluetoothDevice) {
         try {
             gattServer?.cancelConnection(device)
+        } catch (_: SecurityException) {
+            stop()
         } catch (e: Exception) {
             Log.w(TAG, "Error disconnecting device ${device.address}: ${e.message}")
         }
@@ -86,15 +111,14 @@ class BluetoothGattServerManager(
             return false
         }
 
-        if (isActive) {
-            return true
-        }
         if (!permissionManager.hasBluetoothPermissions()) {
+            stop()
             Log.e(TAG, "Missing Bluetooth permissions")
             return false
         }
-        
-        if (bluetoothAdapter?.isEnabled != true) {
+        if (isActive) return true
+
+        if (!isBluetoothEnabled()) {
             Log.e(TAG, "Bluetooth is not enabled")
             return false
         }
@@ -119,37 +143,31 @@ class BluetoothGattServerManager(
      * Stop GATT server
      */
     fun stop() {
-        if (!isActive) {
-            // Idempotent stop
-            stopAdvertising()
-            // Ensure server is closed if present
-            gattServer?.close()
-            gattServer = null
-            serverLinkIDs.clear()
-            return
-        }
-
         isActive = false
-
-        connectionScope.launch {
-            stopAdvertising()
-            
-            // Try to cancel any active connections explicitly before closing
+        stopAdvertising()
+        val server = gattServer
+        gattServer = null
+        characteristic = null
+        serverLinkIDs.clear()
+        val connections = connectionTracker.getConnectedDevices().values.filter { !it.isClient }
+        connections.forEach { connection ->
             try {
-                // Disconnect ALL server connections
-                val servers = connectionTracker.getConnectedDevices().values.filter { !it.isClient }
-                servers.forEach { d ->
-                    try { gattServer?.cancelConnection(d.device) } catch (_: Exception) { }
-                }
-            } catch (_: Exception) { }
-            
-            // Close GATT server
-            gattServer?.close()
-            gattServer = null
-            serverLinkIDs.clear()
-            
-            Log.i(TAG, "GATT server stopped")
+                server?.cancelConnection(connection.device)
+            } catch (_: SecurityException) {
+                // Revocation must not prevent local cleanup or closing the server.
+            }
+            val address = connection.device.address
+            val peerID = connectionTracker.addressPeerMap[address]
+            if (connectionTracker.cleanupDeviceConnectionIfCurrent(address, connection.linkID)) {
+                delegate?.onDeviceDisconnected(connection.device, connection.linkID, peerID)
+            }
         }
+        try {
+            server?.close()
+        } catch (_: SecurityException) {
+            // The platform owns revoked handles; all local state is already released.
+        }
+        Log.i(TAG, "GATT server stopped")
     }
     
     /**
@@ -167,14 +185,12 @@ class BluetoothGattServerManager(
      */
     @Suppress("DEPRECATION")
     private fun setupGattServer() {
-        if (!permissionManager.hasBluetoothPermissions()) return
-        
+        if (!canUseServer()) return
+
         val serverCallback = object : BluetoothGattServerCallback() {
             override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
                 // Guard against callbacks after service shutdown
-                if (!isActive) {
-                    return
-                }
+                if (!canUseServer()) return
 
                 when (newState) {
                     BluetoothProfile.STATE_CONNECTED -> {
@@ -195,7 +211,7 @@ class BluetoothGattServerManager(
 
                         connectionScope.launch {
                             delay(1000)
-                            if (isActive) { // Check if still active
+                            if (canUseServer()) {
                                 delegate?.onDeviceConnected(device)
                             }
                         }
@@ -216,9 +232,7 @@ class BluetoothGattServerManager(
             
             override fun onServiceAdded(status: Int, service: BluetoothGattService) {
                 // Guard against callbacks after service shutdown
-                if (!isActive) {
-                    return
-                }
+                if (!canUseServer()) return
 
                 if (status != BluetoothGatt.GATT_SUCCESS) {
                     Log.e(TAG, "Server: Failed to add service: ${service.uuid}, status: $status")
@@ -235,22 +249,14 @@ class BluetoothGattServerManager(
                 value: ByteArray
             ) {
                 // Guard against callbacks after service shutdown
-                if (!isActive) {
-                    return
-                }
+                if (!canUseServer()) return
 
                 if (characteristic.uuid == AppConstants.Mesh.Gatt.CHARACTERISTIC_UUID) {
                     val linkID = serverLinkIDs[device.address]
                     if (linkID == null) {
                         Log.d(TAG, "Server: Dropping packet from stale connection ${device.address}")
                         if (responseNeeded) {
-                            gattServer?.sendResponse(
-                                device,
-                                requestId,
-                                BluetoothGatt.GATT_FAILURE,
-                                0,
-                                null
-                            )
+                            sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE)
                         }
                         return
                     }
@@ -263,7 +269,7 @@ class BluetoothGattServerManager(
                     }
                     
                     if (responseNeeded) {
-                        gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
+                        sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS)
                     }
                 }
             }
@@ -278,31 +284,31 @@ class BluetoothGattServerManager(
                 value: ByteArray
             ) {
                 // Guard against callbacks after service shutdown
-                if (!isActive) {
-                    return
-                }
+                if (!canUseServer()) return
 
                 if (BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE.contentEquals(value)) {
                     connectionTracker.addSubscribedDevice(device)
 
                     connectionScope.launch {
                         delay(100)
-                        if (isActive) { // Check if still active
+                        if (canUseServer()) {
                             delegate?.onDeviceConnected(device)
                         }
                     }
                 }
                 
                 if (responseNeeded) {
-                    gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
+                    sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS)
                 }
             }
 
             override fun onMtuChanged(device: BluetoothDevice, mtu: Int) {
+                if (!canUseServer()) return
                 connectionTracker.recordMtu(device.address, mtu)
             }
 
             override fun onNotificationSent(device: BluetoothDevice, status: Int) {
+                if (!canUseServer()) return
                 delegate?.onGattServerNotificationComplete(
                     device.address,
                     serverLinkIDs[device.address],
@@ -315,6 +321,9 @@ class BluetoothGattServerManager(
         gattServer?.let { server ->
             try {
                 server.close()
+            } catch (_: SecurityException) {
+                stop()
+                return
             } catch (e: Exception) {
                 Log.w(TAG, "Error closing existing GATT server: ${e.message}")
             }
@@ -328,7 +337,16 @@ class BluetoothGattServerManager(
         }
         
         // Create new server
-        gattServer = bluetoothManager.openGattServer(context, serverCallback)
+        gattServer = try {
+            bluetoothManager.openGattServer(context, serverCallback)
+        } catch (_: SecurityException) {
+            stop()
+            return
+        }
+        if (gattServer == null) {
+            stop()
+            return
+        }
         
         // Create characteristic with notification support
         characteristic = BluetoothGattCharacteristic(
@@ -350,7 +368,12 @@ class BluetoothGattServerManager(
         val service = BluetoothGattService(AppConstants.Mesh.Gatt.SERVICE_UUID, BluetoothGattService.SERVICE_TYPE_PRIMARY)
         service.addCharacteristic(characteristic)
         
-        gattServer?.addService(service)
+        try {
+            gattServer?.addService(service)
+        } catch (_: SecurityException) {
+            stop()
+            return
+        }
         
         Log.i(TAG, "GATT server setup complete")
     }
@@ -378,7 +401,7 @@ class BluetoothGattServerManager(
             BleDiagnostics.advertiseBlocked("bluetoothAdapter is null")
             return
         }
-        if (!bluetoothAdapter.isEnabled) {
+        if (!isBluetoothEnabled()) {
             BleDiagnostics.advertiseBlocked("Bluetooth adapter is off")
             return
         }
@@ -390,7 +413,8 @@ class BluetoothGattServerManager(
             BleDiagnostics.advertiseBlocked("GATT server disabled via debug settings")
             return
         }
-        if (bleAdvertiser == null) {
+        val advertiser = bleAdvertiser
+        if (advertiser == null) {
             BleDiagnostics.advertiseBlocked("BLE advertiser not available on this device")
             return
         }
@@ -453,8 +477,9 @@ class BluetoothGattServerManager(
                 serviceUuid = AppConstants.Mesh.Gatt.SERVICE_UUID,
                 mode = powerManager.profile.value.mode.name
             )
-            bleAdvertiser.startAdvertising(settings, data, scanResponse, advertiseCallback)
+            advertiser.startAdvertising(settings, data, scanResponse, advertiseCallback)
         } catch (se: SecurityException) {
+            stop()
             BleDiagnostics.advertiseBlocked("SecurityException (missing permission?): ${se.message}")
         } catch (e: Exception) {
             BleDiagnostics.advertiseBlocked("startAdvertising threw: ${e.message}")
@@ -466,12 +491,13 @@ class BluetoothGattServerManager(
      */
     @Suppress("DEPRECATION")
     private fun stopAdvertising() {
-        if (!permissionManager.hasBluetoothPermissions() || bleAdvertiser == null) return
         try {
             advertiseCallback?.let { cb ->
-                bleAdvertiser.stopAdvertising(cb)
+                bleAdvertiser?.stopAdvertising(cb)
                 BleDiagnostics.advertiseStopped("stopAdvertising() called")
             }
+        } catch (_: SecurityException) {
+            Log.i(TAG, "Advertising permission revoked during stop")
         } catch (e: Exception) {
             Log.w(TAG, "Error stopping advertising: ${e.message}")
         } finally {

@@ -74,6 +74,17 @@ class BluetoothMeshService(private val context: Context) : TransportBridgeServic
         @Volatile var retries = 0
     }
     private val awaitingAck = java.util.concurrent.ConcurrentHashMap<String, AwaitingAck>()
+    // Retain recipient authorization after delivery (read receipts may arrive later), without
+    // retaining message content or growing an unbounded history.
+    private val receiptRecipients: MutableMap<String, String> = Collections.synchronizedMap(
+        object : LinkedHashMap<String, String>(128, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean = size > 4096
+        }
+    )
+
+    private fun isExpectedPrivateReceipt(messageID: String, peerID: String): Boolean =
+        (awaitingAck[messageID]?.peerID ?: receiptRecipients[messageID]) == peerID
+
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val readReceiptRetrySender = RetryingControlPacketSender(serviceScope)
     private val authenticatedPeerStateStore = SecureAuthenticatedPeerStateStore(context)
@@ -487,6 +498,7 @@ class BluetoothMeshService(private val context: Context) : TransportBridgeServic
             }
             
             override fun onDeliveryAckReceived(messageID: String, peerID: String) {
+                if (!isExpectedPrivateReceipt(messageID, peerID)) return
                 awaitingAck.remove(messageID)
                 // Status events can arrive while MainActivity has detached the UI delegate.
                 // Persist first so the next UI collector observes the advancement.
@@ -500,6 +512,8 @@ class BluetoothMeshService(private val context: Context) : TransportBridgeServic
             }
             
             override fun onReadReceiptReceived(messageID: String, peerID: String) {
+                if (!isExpectedPrivateReceipt(messageID, peerID)) return
+                awaitingAck.remove(messageID)
                 try {
                     com.echobharat.services.AppStateStore.updatePrivateMessageStatus(
                         messageID,
@@ -1098,8 +1112,14 @@ class BluetoothMeshService(private val context: Context) : TransportBridgeServic
 
             // Sign the packet before broadcasting
             val signedPacket = signPacketBeforeBroadcast(packet)
-            broadcastRoutedPacket(RoutedPacket(signedPacket))
-            awaitingAck.putIfAbsent(messageID, AwaitingAck(recipientPeerID, content))
+            val pending = AwaitingAck(recipientPeerID, content)
+            val previous = awaitingAck.putIfAbsent(messageID, pending)
+            // Register before handoff: an immediate receipt must not race retry registration.
+            receiptRecipients[messageID] = recipientPeerID
+            if (!broadcastRoutedPacket(RoutedPacket(signedPacket))) {
+                if (previous == null) awaitingAck.remove(messageID, pending)
+                return false
+            }
             delegate?.didSendPrivateMessage(messageID, recipientPeerID)
             true
         } catch (e: Exception) {
@@ -1149,12 +1169,17 @@ class BluetoothMeshService(private val context: Context) : TransportBridgeServic
 
     /** Sends everything waiting for [peerID]; anything that still cannot go is re-held. */
     private fun flushOutbox(peerID: String) {
+        privateOutbox.expire().forEach {
+            delegate?.didDropPrivateMessage(it.messageID, it.peerID)
+        }
         val pending = privateOutbox.drain(peerID)
         if (pending.isEmpty()) return
         Log.i(TAG, "Noise session with ${peerID.take(8)} is up; sending ${pending.size} held message(s)")
         for (p in pending) {
             if (!transmitPrivateMessage(p.content, p.peerID, p.messageID)) {
-                privateOutbox.enqueue(p.peerID, p.messageID, p.content)
+                privateOutbox.requeue(p).forEach {
+                    delegate?.didDropPrivateMessage(it.messageID, it.peerID)
+                }
             }
         }
     }
@@ -1712,6 +1737,7 @@ class BluetoothMeshService(private val context: Context) : TransportBridgeServic
             // Clear all managers
             fragmentManager.clearAllFragments()
             awaitingAck.clear()
+            receiptRecipients.clear()
             storeForwardManager.clearAllCache()
             securityManager.clearAllData()
             peerManager.clearAllPeers()

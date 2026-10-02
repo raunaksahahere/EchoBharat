@@ -5,8 +5,6 @@ import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCharacteristic
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.UUID
@@ -21,7 +19,6 @@ class BluetoothConnectionTracker(
     
     companion object {
         private const val TAG = "BluetoothConnectionTracker"
-        private const val CLEANUP_DELAY = com.echobharat.util.AppConstants.Mesh.CONNECTION_CLEANUP_DELAY_MS
         private const val ATT_HEADER_BYTES = 3
         private const val ASSUMED_MTU = 185
         private const val MIN_WIRE_BYTES = 100
@@ -70,9 +67,7 @@ class BluetoothConnectionTracker(
     override fun isConnected(id: String): Boolean = connectedDevices.containsKey(id)
     
     override fun disconnect(id: String) {
-        connectedDevices[id]?.gatt?.let {
-            try { it.disconnect() } catch (_: Exception) { }
-        }
+        BluetoothGattCleanup.close(connectedDevices[id]?.gatt)
         cleanupDeviceConnection(id)
         Log.d(TAG, "Requested disconnect for $id")
     }
@@ -328,20 +323,10 @@ class BluetoothConnectionTracker(
      * Clean up all connections
      */
     private fun cleanupAllConnections() {
-        connectedDevices.values.forEach { deviceConn ->
-            deviceConn.gatt?.disconnect()
-        }
-        
-        connectionScope.launch {
-            delay(CLEANUP_DELAY)
-            
-            connectedDevices.values.forEach { deviceConn ->
-                try {
-                    deviceConn.gatt?.close()
-                } catch (e: Exception) {
-                    Log.w(TAG, "Error closing GATT during cleanup: ${e.message}")
-                }
-            }
+        // Close the snapshot before clearing the map. A delayed traversal used to see an
+        // empty map, and could also be cancelled with the owning coroutine scope.
+        connectedDevices.values.toList().forEach { deviceConn ->
+            BluetoothGattCleanup.close(deviceConn.gatt)
         }
     }
     

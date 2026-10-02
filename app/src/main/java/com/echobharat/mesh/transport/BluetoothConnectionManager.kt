@@ -203,7 +203,7 @@ class BluetoothConnectionManager(
                 
                 toEvict.forEach { conn ->
                     if (conn.isClient) {
-                        try { conn.gatt?.disconnect() } catch (_: Exception) { }
+                        connectionTracker.disconnectDevice(conn.device.address)
                     } else {
                         serverManager.disconnectDevice(conn.device)
                     }
@@ -214,6 +214,12 @@ class BluetoothConnectionManager(
         }
     }
     
+    private fun isBluetoothEnabled(): Boolean = try {
+        bluetoothAdapter?.isEnabled == true
+    } catch (_: SecurityException) {
+        false
+    }
+
     /**
      * Start all Bluetooth services with power optimization
      */
@@ -236,7 +242,7 @@ class BluetoothConnectionManager(
             return false
         }
         
-        if (bluetoothAdapter?.isEnabled != true) {
+        if (!isBluetoothEnabled()) {
             Log.e(TAG, "Bluetooth is not enabled")
             return false
         }
@@ -435,8 +441,9 @@ class BluetoothConnectionManager(
         }
     }
 
-    // Expose local adapter address for debug UI
-    fun getLocalAdapterAddress(): String? = try { bluetoothAdapter?.address } catch (e: Exception) { null }
+    // Android does not expose the local MAC to ordinary applications (LOCAL_MAC_ADDRESS
+    // is privileged). Keep the debug UI contract without requesting an unavailable permission.
+    fun getLocalAdapterAddress(): String? = null
 
     fun isClientConnection(address: String): Boolean? {
         return try { connectionTracker.getConnectedDevices()[address]?.isClient } catch (e: Exception) { null }
@@ -479,9 +486,9 @@ class BluetoothConnectionManager(
     fun getDebugInfo(): String {
         return buildString {
             appendLine("=== Bluetooth Connection Manager ===")
-            appendLine("Bluetooth MAC Address: ${bluetoothAdapter?.address}")
+            appendLine("Bluetooth MAC Address: unavailable to applications")
             appendLine("Active: $isActive")
-            appendLine("Bluetooth Enabled: ${bluetoothAdapter?.isEnabled}")
+            appendLine("Bluetooth Enabled: ${isBluetoothEnabled()}")
             appendLine("Has Permissions: ${permissionManager.hasBluetoothPermissions()}")
             appendLine("Discovery readiness: ${permissionManager.readiness().summary()}")
             appendLine("GATT Server Active: ${serverManager.getGattServer() != null}")

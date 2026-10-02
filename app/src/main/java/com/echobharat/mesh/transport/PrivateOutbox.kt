@@ -47,12 +47,17 @@ internal class PrivateOutbox(
      *
      * @return messages evicted to make room, which the caller must report as undeliverable.
      */
-    @Synchronized
-    fun enqueue(peerID: String, messageID: String, content: String): List<Pending> {
-        val queue = queues.getOrPut(peerID) { ArrayDeque() }
-        if (queue.any { it.messageID == messageID }) return emptyList()
+    fun enqueue(peerID: String, messageID: String, content: String): List<Pending> =
+        requeue(Pending(peerID, messageID, content, clock()))
 
-        queue.addLast(Pending(peerID, messageID, content, clock()))
+    /** A failed transmission retains its original deadline, even across repeated retries. */
+    @Synchronized
+    fun requeue(pending: Pending): List<Pending> {
+        val queue = queues.getOrPut(pending.peerID) { ArrayDeque() }
+        if (queue.any { it.messageID == pending.messageID }) return emptyList()
+
+        val insertionIndex = queue.indexOfFirst { it.queuedAt > pending.queuedAt }
+        if (insertionIndex < 0) queue.addLast(pending) else queue.add(insertionIndex, pending)
         val evicted = ArrayList<Pending>()
         while (queue.size > maxPerPeer) evicted.add(queue.removeFirst())
         return evicted

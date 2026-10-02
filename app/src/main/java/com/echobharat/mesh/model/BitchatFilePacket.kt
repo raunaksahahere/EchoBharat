@@ -47,10 +47,10 @@ data class BitchatFilePacket(
     fun encode(): ByteArray? {
         try {
             android.util.Log.d("BitchatFilePacket", "🔄 Encoding: name=$fileName, size=$fileSize, mime=$mimeType")
-        val nameBytes = fileName.toByteArray(Charsets.UTF_8)
-        val mimeBytes = mimeType.toByteArray(Charsets.UTF_8)
-        // Validate bounds for 2-byte TLV lengths (per-TLV). CONTENT may exceed 65535 and will be chunked.
-        if (nameBytes.size > 0xFFFF || mimeBytes.size > 0xFFFF) {
+            val nameBytes = fileName.toByteArray(Charsets.UTF_8)
+            val mimeBytes = mimeType.toByteArray(Charsets.UTF_8)
+            // Validate bounds for 2-byte TLV lengths (per-TLV). CONTENT may exceed 65535 and will be chunked.
+            if (nameBytes.size > 0xFFFF || mimeBytes.size > 0xFFFF) {
                 android.util.Log.e("BitchatFilePacket", "❌ TLV field too large: name=${nameBytes.size}, mime=${mimeBytes.size} (max: 65535)")
                 return null
             }
@@ -59,35 +59,35 @@ data class BitchatFilePacket(
             } else {
                 android.util.Log.d("BitchatFilePacket", "📏 TLV sizes OK: name=${nameBytes.size}, mime=${mimeBytes.size}, content=${content.size}")
             }
-        val sizeFieldLen = 4 // UInt32 for FILE_SIZE (changed from 8 bytes)
-        val contentLenFieldLen = 4 // UInt32 for CONTENT TLV as requested
+            val sizeFieldLen = 4 // UInt32 for FILE_SIZE (changed from 8 bytes)
+            val contentLenFieldLen = 4 // UInt32 for CONTENT TLV as requested
 
-        // Compute capacity: header TLVs + single CONTENT TLV with 4-byte length
-        val contentTLVBytes = 1 + contentLenFieldLen + content.size
-        val capacity = (1 + 2 + nameBytes.size) + (1 + 2 + sizeFieldLen) + (1 + 2 + mimeBytes.size) + contentTLVBytes
-        val buf = ByteBuffer.allocate(capacity).order(ByteOrder.BIG_ENDIAN)
+            // Compute capacity: header TLVs + single CONTENT TLV with 4-byte length
+            val contentTLVBytes = 1 + contentLenFieldLen + content.size
+            val capacity = (1 + 2 + nameBytes.size) + (1 + 2 + sizeFieldLen) + (1 + 2 + mimeBytes.size) + contentTLVBytes
+            val buf = ByteBuffer.allocate(capacity).order(ByteOrder.BIG_ENDIAN)
 
-        // FILE_NAME
-        buf.put(TLVType.FILE_NAME.v.toByte())
-        buf.putShort(nameBytes.size.toShort())
-        buf.put(nameBytes)
+            // FILE_NAME
+            buf.put(TLVType.FILE_NAME.v.toByte())
+            buf.putShort(nameBytes.size.toShort())
+            buf.put(nameBytes)
 
-        // FILE_SIZE (4 bytes)
-        buf.put(TLVType.FILE_SIZE.v.toByte())
-        buf.putShort(sizeFieldLen.toShort())
-        buf.putInt(fileSize.toInt())
+            // FILE_SIZE (4 bytes)
+            buf.put(TLVType.FILE_SIZE.v.toByte())
+            buf.putShort(sizeFieldLen.toShort())
+            buf.putInt(fileSize.toInt())
 
-        // MIME_TYPE
-        buf.put(TLVType.MIME_TYPE.v.toByte())
-        buf.putShort(mimeBytes.size.toShort())
-        buf.put(mimeBytes)
+            // MIME_TYPE
+            buf.put(TLVType.MIME_TYPE.v.toByte())
+            buf.putShort(mimeBytes.size.toShort())
+            buf.put(mimeBytes)
 
-        // CONTENT (single TLV with 4-byte length)
-        buf.put(TLVType.CONTENT.v.toByte())
-        buf.putInt(content.size)
-        buf.put(content)
+            // CONTENT (single TLV with 4-byte length)
+            buf.put(TLVType.CONTENT.v.toByte())
+            buf.putInt(content.size)
+            buf.put(content)
 
-        val result = buf.array()
+            val result = buf.array()
             android.util.Log.d("BitchatFilePacket", "✅ Encoded successfully: ${result.size} bytes total")
             return result
         } catch (e: Exception) {

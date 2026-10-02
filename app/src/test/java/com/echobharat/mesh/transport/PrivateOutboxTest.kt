@@ -45,6 +45,31 @@ class PrivateOutboxTest {
     }
 
     @Test
+    fun `failed send requeue must not reset the original expiry deadline`() {
+        val box = outbox(ttl = 10_000L)
+        box.enqueue("peerA", "old", "text")
+        now += 9_000L
+        val pending = box.drain("peerA").single()
+        box.requeue(pending)
+        now += 1_000L
+        assertEquals(listOf("old"), box.expire().map { it.messageID })
+        assertTrue(box.waitingPeers().isEmpty())
+    }
+
+    @Test
+    fun `old retry is expired even when newer messages arrived during transmission`() {
+        val box = outbox(ttl = 10_000L)
+        box.enqueue("peerA", "old", "text")
+        val pending = box.drain("peerA").single()
+        now += 5_000L
+        box.enqueue("peerA", "new", "text")
+        box.requeue(pending)
+        now += 5_000L
+        assertEquals(listOf("old"), box.expire().map { it.messageID })
+        assertEquals(listOf("new"), box.drain("peerA").map { it.messageID })
+    }
+
+    @Test
     fun `messages older than the ttl expire and empty queues are forgotten`() {
         val box = outbox(ttl = 10_000L)
         box.enqueue("peerA", "old", "x")
