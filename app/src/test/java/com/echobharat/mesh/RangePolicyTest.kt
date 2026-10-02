@@ -55,3 +55,23 @@ class RangePolicyTest {
         assertEquals("1.5 km", RangePolicy.formatDistance(1500.0))
     }
 }
+
+class RangePolicyBearingTest {
+    @org.junit.Test
+    fun `bearing points the right way`() {
+        // Due north, east, south, west of the origin.
+        org.junit.Assert.assertEquals(0.0, RangePolicy.bearingDegrees(0.0, 0.0, 1.0, 0.0), 0.5)
+        org.junit.Assert.assertEquals(90.0, RangePolicy.bearingDegrees(0.0, 0.0, 0.0, 1.0), 0.5)
+        org.junit.Assert.assertEquals(180.0, RangePolicy.bearingDegrees(0.0, 0.0, -1.0, 0.0), 0.5)
+        org.junit.Assert.assertEquals(270.0, RangePolicy.bearingDegrees(0.0, 0.0, 0.0, -1.0), 0.5)
+    }
+
+    @org.junit.Test
+    fun `compass names cover the circle and wrap at north`() {
+        org.junit.Assert.assertEquals("N", RangePolicy.compassPoint(0.0))
+        org.junit.Assert.assertEquals("N", RangePolicy.compassPoint(359.0))
+        org.junit.Assert.assertEquals("NE", RangePolicy.compassPoint(45.0))
+        org.junit.Assert.assertEquals("S", RangePolicy.compassPoint(180.0))
+        org.junit.Assert.assertEquals("W", RangePolicy.compassPoint(271.0))
+    }
+}

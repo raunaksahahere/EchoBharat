@@ -53,6 +53,25 @@ class EchoBharatMeshPayloadCodecTest {
     }
 
     @Test
+    fun `SOS cannot omit expiry or extend beyond its bounded lifetime`() {
+        val now = System.currentTimeMillis()
+        val sos = sample.copy(type = MessageType.SOS, ts = now)
+        assertNull(EchoBharatMeshPayloadCodec.decode(EchoBharatMeshPayloadCodec.encode(sos)))
+        assertNull(EchoBharatMeshPayloadCodec.decode(EchoBharatMeshPayloadCodec.encode(
+            sos.copy(expiresAt = now + SosManager.LIFETIME_MS + 1)
+        )))
+        assertNotNull(EchoBharatMeshPayloadCodec.decode(EchoBharatMeshPayloadCodec.encode(
+            sos.copy(expiresAt = now + SosManager.LIFETIME_MS)
+        )))
+    }
+
+    @Test
+    fun `far future SOS timestamps cannot pin distress state indefinitely`() {
+        val future = sample.copy(type = MessageType.SOS, ts = Long.MAX_VALUE - 60_000, expiresAt = Long.MAX_VALUE)
+        assertNull(EchoBharatMeshPayloadCodec.decode(EchoBharatMeshPayloadCodec.encode(future)))
+    }
+
+    @Test
     fun `optional fields may be absent`() {
         val minimal = "EB1:{\"msgId\":\"m\",\"type\":\"TYPED_TEXT\",\"srcLang\":\"en\",\"text\":\"hi\"," +
             "\"senderName\":\"A\",\"senderId\":\"p\",\"deviceModel\":\"X\"}"

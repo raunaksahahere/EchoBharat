@@ -42,8 +42,18 @@ class SosManager(
         /** How long an announcement keeps propagating after creation. */
         const val LIFETIME_MS = 60 * 60 * 1000L // 1 hour
 
+        /** Small sender clock skew accepted by the payload codec. */
+        internal const val MAX_CLOCK_SKEW_MS = 5 * 60 * 1000L
+
         /** Cadence of re-announcement to newly-met peers. */
         const val REANNOUNCE_INTERVAL_MS = 5 * 60 * 1000L // 5 minutes
+
+        /** A cached fix newer and tighter than this is used as is; anything else gets refreshed. */
+        private const val GOOD_FIX_AGE_MS = 2 * 60 * 1000L
+        private const val GOOD_FIX_ACCURACY_M = 100f
+
+        /** Extra cancellation broadcasts after the first, in ms after it. */
+        private val RESOLVE_REPEAT_DELAYS_MS = longArrayOf(5_000L, 15_000L, 30_000L)
 
         /** How often expiry is swept. */
         private const val SWEEP_INTERVAL_MS = 30 * 1000L
@@ -61,6 +71,14 @@ class SosManager(
         val msgId: String get() = message.msgId
     }
 
+    /** Our own cancelled announcement, kept so late joiners still hear that it is over. */
+    private class Cancelled(val original: EchoBharatMessage) {
+        val deliveredTo: MutableSet<String> = ConcurrentHashMap.newKeySet()
+        var lastAnnouncedAt: Long = System.currentTimeMillis()
+    }
+
+    private val cancelled = ConcurrentHashMap<String, Cancelled>()
+
     private val location = LocationProvider(context)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -69,11 +87,10 @@ class SosManager(
     val announcements: StateFlow<List<Active>> = _announcements.asStateFlow()
 
     /**
-     * Announcements cancelled, mapped to who cancelled them, kept so a late relay cannot
-     * resurrect them. Recording the canceller matters: only the originator's cancellation
-     * counts, so a resolve that arrives before its SOS is checked when the SOS turns up.
+     * Cancellations are namespaced by their authenticated sender. A foreign cancellation
+     * must never overwrite the originator's tombstone, including before the SOS arrives.
      */
-    private val resolvedBy = ConcurrentHashMap<String, String>()
+    private val resolvedBy = ConcurrentHashMap<Pair<String, String>, Long>()
 
     private var ticker: Job? = null
 
@@ -100,9 +117,11 @@ class SosManager(
      * Coordinates are attached when a fix is already cached; the announcement goes out
      * regardless, because waiting for GPS in an emergency is the wrong trade.
      */
+    @Synchronized
     fun raise(text: String, srcLang: String): EchoBharatMessage? {
         val fix = location.lastKnown()
         val now = System.currentTimeMillis()
+        val fixIsGood = fix != null && now - fix.time <= GOOD_FIX_AGE_MS && fix.accuracy <= GOOD_FIX_ACCURACY_M
 
         val message = mesh.sendSos(
             text = text,
@@ -121,6 +140,10 @@ class SosManager(
         active[message.msgId] = entry
         publish()
 
+        // Never wait for GPS before sending, but do not settle for a missing or stale position
+        // either: get a real fix in the background and re-announce the same SOS with it.
+        if (!fixIsGood) upgradeWithFreshFix(message.msgId)
+
         Log.i(
             TAG,
             "SOS raised: ${message.msgId} " +
@@ -130,9 +153,28 @@ class SosManager(
         return message
     }
 
+    private fun upgradeWithFreshFix(msgId: String) {
+        scope.launch {
+            val fix = location.fresh() ?: return@launch
+            synchronized(this@SosManager) {
+                val entry = active[msgId] ?: return@launch // cancelled while we waited
+                val updated = entry.message.copy(
+                    lat = fix.latitude,
+                    lon = fix.longitude,
+                    gpsAccuracyM = fix.accuracy
+                )
+                active[msgId] = entry.copy(message = updated)
+                publish()
+                mesh.rebroadcastSos(updated)
+                Log.i(TAG, "SOS $msgId re-announced with a fresh fix (±${fix.accuracy.toInt()} m)")
+            }
+        }
+    }
+
     /**
      * Stops propagation of one of our own announcements early and tells the mesh.
      */
+    @Synchronized
     fun resolve(msgId: String): Boolean {
         val entry = active[msgId]
         if (entry == null) {
@@ -146,9 +188,19 @@ class SosManager(
 
         mesh.sendSosResolved(entry.message)
         active.remove(msgId)
-        resolvedBy[msgId] = entry.message.senderId
+        resolvedBy[msgId to entry.message.senderId] = System.currentTimeMillis() + LIFETIME_MS + MAX_CLOCK_SKEW_MS
+        cancelled[msgId] = Cancelled(entry.message).also { it.deliveredTo.addAll(entry.deliveredTo) }
         publish()
         Log.i(TAG, "SOS resolved by sender: $msgId")
+
+        // One cancellation is one packet over a lossy mesh. Repeat it, or a relay that missed
+        // it keeps telling newcomers about an emergency that is over.
+        scope.launch {
+            for ((index, waitMs) in RESOLVE_REPEAT_DELAYS_MS.withIndex()) {
+                delay(waitMs - if (index == 0) 0L else RESOLVE_REPEAT_DELAYS_MS[index - 1])
+                mesh.sendSosResolved(entry.message)
+            }
+        }
         return true
     }
 
@@ -159,6 +211,7 @@ class SosManager(
      * [message].senderId for a resolve is the transport-authenticated sender, so a third
      * party cannot silence someone else's distress call by naming its id.
      */
+    @Synchronized
     fun onReceived(message: EchoBharatMessage) {
         when (message.type) {
             MessageType.SOS_RESOLVED -> {
@@ -172,7 +225,7 @@ class SosManager(
                     )
                     return
                 }
-                resolvedBy[ref] = message.senderId
+                resolvedBy[ref to message.senderId] = System.currentTimeMillis() + LIFETIME_MS + MAX_CLOCK_SKEW_MS
                 if (active.remove(ref) != null) {
                     Log.i(TAG, "SOS $ref cancelled by its sender")
                     publish()
@@ -180,7 +233,7 @@ class SosManager(
             }
 
             MessageType.SOS -> {
-                if (resolvedBy[message.msgId] == message.senderId) {
+                if ((resolvedBy[message.msgId to message.senderId] ?: 0L) > System.currentTimeMillis()) {
                     Log.i(TAG, "Ignoring already-resolved SOS ${message.msgId}")
                     return
                 }
@@ -188,7 +241,21 @@ class SosManager(
                     Log.i(TAG, "Ignoring expired SOS ${message.msgId}")
                     return
                 }
-                if (active.containsKey(message.msgId)) return
+                val held = active[message.msgId]
+                if (held != null) {
+                    // The sender re-announces the same SOS once it has a GPS fix. Take the
+                    // position when we had none or the new one is tighter, never from a relay
+                    // claiming a different sender.
+                    val better = message.hasLocation && held.message.senderId == message.senderId &&
+                        (!held.message.hasLocation ||
+                            (message.gpsAccuracyM ?: Float.MAX_VALUE) < (held.message.gpsAccuracyM ?: Float.MAX_VALUE))
+                    if (better) {
+                        active[message.msgId] = held.copy(message = message)
+                        publish()
+                        Log.i(TAG, "SOS ${message.msgId} updated with the sender's position")
+                    }
+                    return
+                }
 
                 active[message.msgId] = Active(message = message, isMine = false)
                 publish()
@@ -203,7 +270,10 @@ class SosManager(
         }
     }
 
+    @Synchronized
     private fun sweepExpired() {
+        val now = System.currentTimeMillis()
+        resolvedBy.entries.removeIf { it.value <= now }
         val expired = active.values.filter { it.message.isExpired() }
         if (expired.isEmpty()) return
         expired.forEach {
@@ -217,7 +287,9 @@ class SosManager(
      * Re-broadcasts live announcements, but only when peers have appeared that were not
      * present last time, and at most once per [REANNOUNCE_INTERVAL_MS] per announcement.
      */
+    @Synchronized
     private fun reannounceToNewPeers() {
+        reannounceCancellations()
         if (active.isEmpty()) return
 
         val peers = mesh.connectedPeers.value.map { it.peerId }.toSet()
@@ -236,6 +308,23 @@ class SosManager(
                 entry.deliveredTo.addAll(unseen)
                 entry.lastAnnouncedAt = now
                 Log.i(TAG, "Re-announced SOS ${entry.msgId} for ${unseen.size} new peer(s)")
+            }
+        }
+    }
+
+    /** Tells newly met peers that one of our SOS calls is over, until it would have expired. */
+    private fun reannounceCancellations() {
+        if (cancelled.isEmpty()) return
+        val now = System.currentTimeMillis()
+        cancelled.entries.removeIf { it.value.original.isExpired() }
+        val peers = mesh.connectedPeers.value.map { it.peerId }.toSet()
+        for (c in cancelled.values) {
+            if (now - c.lastAnnouncedAt < REANNOUNCE_INTERVAL_MS) continue
+            val unseen = peers - c.deliveredTo
+            if (unseen.isEmpty()) continue
+            if (mesh.sendSosResolved(c.original)) {
+                c.deliveredTo.addAll(unseen)
+                c.lastAnnouncedAt = now
             }
         }
     }

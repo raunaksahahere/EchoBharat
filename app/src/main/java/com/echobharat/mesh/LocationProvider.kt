@@ -7,6 +7,11 @@ import android.content.pm.PackageManager
 import android.location.Location
 import android.location.LocationManager
 import android.os.Build
+import android.os.CancellationSignal
+import android.os.Looper
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.resume
 import android.util.Log
 import androidx.core.content.ContextCompat
 
@@ -92,6 +97,81 @@ class LocationProvider(private val context: Context) {
         }
         return best
     }
+
+    /**
+     * Asks the radios for a position right now instead of reading whatever was cached.
+     *
+     * [lastKnown] is empty on a phone that has not had a fix recently, which is exactly the
+     * phone in the field, so the SOS carried no coordinates and the distance on the other
+     * side read "no position". GPS is tried first, then the network provider; null only when
+     * neither answers in time or location is off.
+     */
+    @SuppressLint("MissingPermission")
+    suspend fun fresh(timeoutMs: Long = 15_000L): Location? {
+        if (!hasPermission()) return null
+        val mgr = manager ?: return null
+        val providers = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
+            .filter { runCatching { mgr.isProviderEnabled(it) }.getOrDefault(false) }
+        for ((i, provider) in providers.withIndex()) {
+            // GPS gets most of the budget; the network fallback only needs a moment.
+            val budget = when {
+                providers.size == 1 -> timeoutMs
+                i == 0 -> timeoutMs * 2 / 3
+                else -> timeoutMs - timeoutMs * 2 / 3
+            }
+            val fix = withTimeoutOrNull(budget) { singleFix(mgr, provider) }
+            if (fix != null) {
+                Log.i(TAG, "Fresh fix from $provider: ±${fix.accuracy}m")
+                return fix
+            }
+        }
+        Log.i(TAG, "No fresh fix within ${timeoutMs}ms")
+        return null
+    }
+
+    /** A fresh fix, or the cached one when the radios stay silent. */
+    suspend fun best(maxAgeMs: Long = 2 * 60 * 1000L): Location? {
+        val cached = lastKnown()
+        if (cached != null && System.currentTimeMillis() - cached.time <= maxAgeMs) return cached
+        return fresh() ?: cached
+    }
+
+    @SuppressLint("MissingPermission")
+    @Suppress("DEPRECATION")
+    private suspend fun singleFix(mgr: LocationManager, provider: String): Location? =
+        suspendCancellableCoroutine { cont ->
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    val signal = CancellationSignal()
+                    cont.invokeOnCancellation { signal.cancel() }
+                    mgr.getCurrentLocation(provider, signal, ContextCompat.getMainExecutor(context)) { fix ->
+                        if (cont.isActive) cont.resume(fix)
+                    }
+                } else {
+                    val listener = object : android.location.LocationListener {
+                        override fun onLocationChanged(location: Location) {
+                            runCatching { mgr.removeUpdates(this) }
+                            if (cont.isActive) cont.resume(location)
+                        }
+
+                        // These were abstract on API 26–29. Relying on the newer default
+                        // methods can crash an older phone when GPS is switched off.
+                        override fun onProviderEnabled(provider: String) = Unit
+                        override fun onProviderDisabled(provider: String) {
+                            runCatching { mgr.removeUpdates(this) }
+                            if (cont.isActive) cont.resume(null)
+                        }
+                        @Deprecated("Deprecated in Android")
+                        override fun onStatusChanged(provider: String?, status: Int, extras: android.os.Bundle?) = Unit
+                    }
+                    cont.invokeOnCancellation { runCatching { mgr.removeUpdates(listener) } }
+                    mgr.requestSingleUpdate(provider, listener, Looper.getMainLooper())
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "SINGLE_FIX_FAILED[$provider]: ${e.message}")
+                if (cont.isActive) cont.resume(null)
+            }
+        }
 
     /** True when the device has location switched on at all. */
     fun isLocationEnabled(): Boolean = try {

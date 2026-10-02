@@ -75,6 +75,22 @@ object RangePolicy {
         return earthRadius * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
     }
 
+    /** Initial compass bearing from point 1 to point 2, in degrees clockwise from north. */
+    fun bearingDegrees(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+        val p1 = Math.toRadians(lat1)
+        val p2 = Math.toRadians(lat2)
+        val dLon = Math.toRadians(lon2 - lon1)
+        val y = Math.sin(dLon) * Math.cos(p2)
+        val x = Math.cos(p1) * Math.sin(p2) - Math.sin(p1) * Math.cos(p2) * Math.cos(dLon)
+        return (Math.toDegrees(Math.atan2(y, x)) + 360.0) % 360.0
+    }
+
+    /** Eight-point compass name for a bearing. */
+    fun compassPoint(degrees: Double): String {
+        val points = listOf("N", "NE", "E", "SE", "S", "SW", "W", "NW")
+        return points[(((degrees % 360.0) + 360.0) % 360.0 / 45.0 + 0.5).toInt() % 8]
+    }
+
     /** Human-readable distance for the announcement detail view. */
     fun formatDistance(metres: Double): String = when {
         metres < 1_000 -> "${metres.toInt()} m"

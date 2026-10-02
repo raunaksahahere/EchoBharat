@@ -48,7 +48,16 @@ object EchoBharatMeshPayloadCodec {
             val textContent = String(payloadBytes, StandardCharsets.UTF_8)
             if (textContent.startsWith(MAGIC_PREFIX)) {
                 val json = textContent.removePrefix(MAGIC_PREFIX)
-                EchoBharatMessage.fromJson(json)
+                EchoBharatMessage.fromJson(json)?.takeIf { message ->
+                    // Distress traffic must expire even when a peer supplies malformed JSON
+                    // metadata. Otherwise an absent expiry or future timestamp pins relay state.
+                    if (message.type != MessageType.SOS) true else {
+                        val expiry = message.expiresAt
+                        expiry != null && message.ts > 0 && expiry > message.ts &&
+                            expiry - message.ts <= SosManager.LIFETIME_MS &&
+                            message.ts <= System.currentTimeMillis() + SosManager.MAX_CLOCK_SKEW_MS
+                    }
+                }
             } else {
                 // Plain bitchat text: no language tag, so none is invented.
                 EchoBharatMessage(

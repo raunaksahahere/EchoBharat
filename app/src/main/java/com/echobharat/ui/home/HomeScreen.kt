@@ -142,6 +142,20 @@ fun HomeScreen(
             onRaise = { showSosDialog = true }
         )
 
+        // The live distress calls — including your own, with the button that stops it. They
+        // used to appear only inside a chat, so the person who raised an SOS had no way to
+        // cancel it from the home screen.
+        if (sosAnnouncements.isNotEmpty()) {
+            val sosContext = androidx.compose.ui.platform.LocalContext.current
+            val sosLocation = remember { com.echobharat.mesh.LocationProvider(sosContext) }
+            com.echobharat.ui.transceiver.SosBanner(
+                announcements = sosAnnouncements,
+                locationProvider = sosLocation,
+                onResolve = { meshManager.sos.resolve(it) }
+            )
+            Spacer(Modifier.height(8.dp))
+        }
+
         // ---- peers -----------------------------------------------------------------
         if (filtered.isEmpty() && earlier.isEmpty()) {
             EmptyPeers(hasPeers = peers.isNotEmpty() || conversations.isNotEmpty(), query = query)

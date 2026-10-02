@@ -13,6 +13,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
 import com.echobharat.mesh.LocationProvider
 import com.echobharat.mesh.RangePolicy
 import com.echobharat.mesh.SosManager
@@ -74,7 +75,8 @@ internal fun SosBanner(
                             )
                             Text(
                                 text = buildString {
-                                    append("${minsLeft} min left")
+                                    if (entry.isMine) append("Your SOS is live  •  ")
+                                append("${minsLeft} min left")
                                     append(if (msg.hasLocation) "  •  location attached" else "  •  no location")
                                     append("  •  tap for details")
                                 },
@@ -84,14 +86,29 @@ internal fun SosBanner(
                             )
                         }
                         if (entry.isMine) {
-                            TextButton(onClick = { onResolve(msg.msgId) }) {
-                                Text("Resolve", color = AccentEmerald, fontWeight = FontWeight.Bold)
+                            Button(
+                                onClick = { onResolve(msg.msgId) },
+                                colors = ButtonDefaults.buttonColors(containerColor = AccentEmerald),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                            ) {
+                                Text("Stop SOS", color = SurfaceCard, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                             }
                         }
                     }
 
                     if (expanded == msg.msgId) {
-                        val here = remember(msg.msgId) { locationProvider.lastKnown() }
+                        // A live position, refreshed while the details are open: the cached fix was
+                        // often null, which is why the distance used to read "no position".
+                        val hereState = produceState<android.location.Location?>(
+                            initialValue = locationProvider.lastKnown(),
+                            key1 = msg.msgId
+                        ) {
+                            while (true) {
+                                locationProvider.fresh(8_000L)?.let { value = it }
+                                delay(10_000L)
+                            }
+                        }
+                        val here = hereState.value
                         Surface(
                             shape = RoundedCornerShape(8.dp),
                             color = SurfaceCard,
@@ -128,10 +145,27 @@ internal fun SosBanner(
                                     val metres = RangePolicy.distanceMeters(
                                         msg.lat, msg.lon, here.latitude, here.longitude
                                     )
+                                    val toward = RangePolicy.compassPoint(
+                                        RangePolicy.bearingDegrees(
+                                            here.latitude, here.longitude, msg.lat, msg.lon
+                                        )
+                                    )
+                                    // GPS error on both phones adds up; say so rather than
+                                    // implying metre precision.
+                                    val slack = ((msg.gpsAccuracyM ?: 0f) + here.accuracy).toInt()
                                     Text(
-                                        text = "Approximately ${RangePolicy.formatDistance(metres)} away",
+                                        text = "About ${RangePolicy.formatDistance(metres)} away, " +
+                                            "towards the $toward" +
+                                            if (slack > 0) " (±$slack m)" else "",
                                         style = MaterialTheme.typography.labelSmall,
                                         fontWeight = FontWeight.Bold,
+                                        color = AccentAlert,
+                                        fontSize = 11.sp
+                                    )
+                                } else if (!entry.isMine && !locationProvider.hasPermission()) {
+                                    Text(
+                                        text = "Allow location to see how far away this is",
+                                        style = MaterialTheme.typography.labelSmall,
                                         color = AccentAlert,
                                         fontSize = 11.sp
                                     )
