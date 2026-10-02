@@ -1,0 +1,16 @@
+# Large build inputs and intermediates — regenerate with README.md
+checkpoints/
+extracted/
+ttsenv/
+*.fp32.onnx
+*.fp32.onnx.data
+
+# Exported models are release artifacts, published rather than committed
+out/
+
+# Extracted from the checkpoint archives; regenerate per README
+configs/
+
+# Downloaded and staged translation models — same rule as out/: release artifacts,
+# fetched by README.md §7 rather than committed. ~520 MB.
+mt/
