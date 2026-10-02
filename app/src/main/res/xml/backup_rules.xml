@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <exclude domain="sharedpref" path="echobharat_identity" />
+    <exclude domain="sharedpref" path="echobharat_crypto_secure" />
+</full-backup-content>

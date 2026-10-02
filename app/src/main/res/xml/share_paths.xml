@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Only what offline sharing needs: installed models and the staged APK copy. -->
+<paths>
+    <files-path name="models" path="models/" />
+    <external-files-path name="sideloaded" path="models/" />
+    <cache-path name="share" path="share/" />
+</paths>

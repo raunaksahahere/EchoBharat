@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">EchoBharat</string>
+    <string name="app_tagline">Neural Transceiver for Low-Bitrate Links</string>
+    <string name="mesh_service_channel_name">EchoBharat Mesh Network</string>
+    <string name="mesh_service_channel_desc">Maintains offline peer-to-peer walkie-talkie mesh connections in background</string>
+    <string name="mesh_service_notification_content">EchoBharat mesh is active (%1$d peers connected).</string>
+    <string name="notification_action_quit_bitchat">Quit EchoBharat</string>
+</resources>
