@@ -96,6 +96,51 @@ class VerifiedDownloaderTest {
     }
 
     @Test
+    fun `a stale partial rejected with 416 retries the same source from scratch`() = runBlocking {
+        File(temp.root, "model.onnx.part").writeText("x".repeat(payload.length + 1))
+        server.enqueue(MockResponse.Builder().code(416)
+            .headers(Headers.headersOf("Content-Range", "bytes */${payload.length}")).build())
+        server.enqueue(ok(payload))
+
+        val result = downloader.download(listOf(url()), target(), sha, payload.length.toLong())
+
+        assertTrue(result is VerifiedDownloader.Result.Installed)
+        assertEquals(payload, target().readText())
+        assertEquals("bytes=${payload.length + 1}-", server.takeRequest().headers["Range"])
+        assertEquals(null, server.takeRequest().headers["Range"])
+    }
+
+    @Test
+    fun `a corrupt resumed prefix retries the same source from scratch`() = runBlocking {
+        val half = payload.length / 2
+        File(temp.root, "model.onnx.part").writeText("x".repeat(half))
+        server.enqueue(MockResponse.Builder().code(206)
+            .headers(Headers.headersOf("Content-Range", "bytes $half-${payload.length - 1}/${payload.length}"))
+            .body(payload.substring(half)).build())
+        server.enqueue(ok(payload))
+
+        val result = downloader.download(listOf(url()), target(), sha, payload.length.toLong())
+
+        assertTrue(result is VerifiedDownloader.Result.Installed)
+        assertEquals(payload, target().readText())
+        assertEquals("bytes=$half-", server.takeRequest().headers["Range"])
+        assertEquals(null, server.takeRequest().headers["Range"])
+    }
+
+    @Test
+    fun `a complete verified partial is installed when range returns 416`() = runBlocking {
+        File(temp.root, "model.onnx.part").writeText(payload)
+        server.enqueue(MockResponse.Builder().code(416)
+            .headers(Headers.headersOf("Content-Range", "bytes */${payload.length}")).build())
+
+        val result = downloader.download(listOf(url()), target(), sha, payload.length.toLong())
+
+        assertTrue(result is VerifiedDownloader.Result.Installed)
+        assertEquals(payload, target().readText())
+        assertEquals(1, server.requestCount)
+    }
+
+    @Test
     fun `server errors are retried and a partial file is kept for next time`() = runBlocking {
         server.enqueue(MockResponse.Builder().code(503).build())
         server.enqueue(MockResponse.Builder().code(503).build())

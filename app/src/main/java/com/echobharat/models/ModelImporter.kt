@@ -76,11 +76,26 @@ class ModelImporter(
             val sha = md.digest().joinToString("") { "%02x".format(it) }
             val targets = index[sha] ?: return Report(rejected = listOf(name))
 
-            val missing = targets.filter { !(it.isFile && it.length() == tmp.length()) }
+            // Equal length does not prove equal content: re-import is also the repair
+            // path for an installed file that was corrupted or incompletely replaced.
+            val missing = targets.filterNot {
+                it.isFile && it.length() == tmp.length() && VerifiedDownloader.sha256(it) == sha
+            }
             if (missing.isEmpty()) return Report(alreadyPresent = listOf(targets.first().name))
             for (target in missing) {
                 target.parentFile?.mkdirs()
-                tmp.copyTo(target, overwrite = true)
+                // Copy to a sibling staging file, never onto the installable name.
+                val staged = File.createTempFile("import-", ".part", target.parentFile)
+                try {
+                    tmp.copyTo(staged, overwrite = true)
+                    java.nio.file.Files.move(
+                        staged.toPath(), target.toPath(),
+                        java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING
+                    )
+                } finally {
+                    staged.delete()
+                }
             }
             return Report(installed = missing.map { it.name }.distinct())
         } finally {

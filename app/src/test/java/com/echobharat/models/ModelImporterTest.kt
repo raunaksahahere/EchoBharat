@@ -78,6 +78,20 @@ class ModelImporterTest {
     }
 
     @Test
+    fun `reimport repairs corrupt installed content even when its size matches`() {
+        val imp = importer()
+        imp.import("a", acoustic.byteInputStream())
+        val target = File(models, "ta/model.int8.onnx")
+        target.writeText("x".repeat(acoustic.length))
+
+        val report = imp.import("a", acoustic.byteInputStream())
+
+        assertEquals(listOf("model.int8.onnx"), report.installed)
+        assertTrue(report.alreadyPresent.isEmpty())
+        assertEquals(acoustic, target.readText())
+    }
+
+    @Test
     fun `importing twice reports the file as already present`() {
         val imp = importer()
         imp.import("a", acoustic.byteInputStream())

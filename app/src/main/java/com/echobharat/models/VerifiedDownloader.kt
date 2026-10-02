@@ -54,20 +54,26 @@ class VerifiedDownloader(
         for (url in sources) {
             for (attempt in 1..attemptsPerSource) {
                 currentCoroutineContext().ensureActive()
+                val resumed = part.isFile && part.length() > 0
                 try {
                     val digest = fetch(url, part, expectedBytes, onProgress)
                     if (!digest.equals(sha256, ignoreCase = true)) throw ChecksumMismatch(digest)
-                    if (!part.renameTo(target)) {
-                        part.copyTo(target, overwrite = true)
-                        part.delete()
-                    }
+                    // Never stream onto an installable name: a crash or full disk during
+                    // a copy would leave an unverified partial model that looks installed.
+                    java.nio.file.Files.move(
+                        part.toPath(), target.toPath(),
+                        java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING
+                    )
                     return Result.Installed(target)
                 } catch (e: ChecksumMismatch) {
-                    // A bad copy on this source; its prefix is worthless, and retrying the
-                    // same URL would fetch the same bytes. Move to the next source.
+                    // A resumed prefix can be stale/corrupt even when this source is
+                    // healthy (including a 416 for a partial larger than the file).
+                    // Discard it and try this source once from scratch within the retry
+                    // budget. A mismatched fresh copy still goes straight to the mirror.
                     part.delete()
                     lastError = "checksum mismatch for ${target.name}: expected $sha256, got ${e.actual}"
-                    break
+                    if (!resumed || attempt == attemptsPerSource) break
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e // keep the .part: cancelling is not a reason to lose progress
                 } catch (e: Exception) {
