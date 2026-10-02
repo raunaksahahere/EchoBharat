@@ -1,0 +1,63 @@
+# Project-specific
+# Planning docs stay local, except the tracker, which is the shared record of what is
+# done and what still needs hardware. (A bare "docs/" could not be re-included from.)
+docs/*
+!docs/Tracker.md
+reference-repo/
+
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+!**/src/**/build/
+!**/src/**/.gradle/
+
+# Kotlin
+.kotlin/
+
+# Android / SDK
+local.properties
+*.apk
+*.aab
+*.ap_
+*.aar
+*.dex
+*.class
+captures/
+.cxx/
+output.json
+release/
+
+# Signing / secrets
+*.jks
+*.keystore
+keystore.properties
+signing.properties
+*.env
+.env.local
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+*.ipr
+*.iws
+.navigation/
+freeline/
+freeline_project_description.json
+
+# VS Code
+.vscode/
+
+# Logs & profiling
+*.log
+*.hprof
+lint-results*.html
+lint-results*.xml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python caches (model-export tooling)
+__pycache__/
+*.pyc
