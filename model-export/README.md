@@ -229,6 +229,21 @@ both the cacheless and the KV-cached decoder. `mt/<family>/` needs the upstream
 `encoder_model.onnx`, `decoder_model.onnx`, `decoder_with_past_model.onnx` plus the files
 below.
 
+### Check an individual translation
+
+With the same dependencies and downloaded family files as the golden-data generator:
+
+```
+python translate_onnx.py --dir mt/en-indic --src en --tgt ta --text "I need water and medicine."
+python -m unittest discover -s tests -v
+```
+
+The helper applies the reference IndicProcessor before encoding and after decoding,
+including script conversion and number/URL placeholders. Use `en-indic` for English →
+Indian and `indic-en` for Indian → English; Indian → Indian requires two invocations
+through English. The lightweight Python tests check this wiring without model downloads;
+they do not replace the opt-in real-model JVM test above.
+
 ### Rebuild the vocab files
 
 The ONNX repos ship a SentencePiece model plus a separate graph dictionary whose ids do

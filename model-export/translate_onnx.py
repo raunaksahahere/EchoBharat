@@ -28,8 +28,11 @@ import numpy as np
 import onnxruntime as ort
 import sentencepiece as spm
 
-# IndicTrans2 uses FLORES-style tags. Only the two languages with real STT/TTS today.
-LANG_TAG = {"hi": "hin_Deva", "en": "eng_Latn"}
+# Reuse the reference pipeline's language table and its compatible processor loader.
+# Importing IndicTransToolkit directly also imports an unnecessary transformers stack.
+from make_mt_golden import FLORES, load_processor
+
+LANG_TAG = FLORES
 
 BOS, PAD, EOS, UNK = 0, 1, 2, 3
 DECODER_START = EOS  # decoder_start_token_id == 2, per generation_config.json
@@ -105,6 +108,7 @@ def main() -> int:
 
     src_vocab, tgt_vocab, sp_src, sp_tgt, enc, dec = load_dir(args.dir)
     tgt_inv = {v: k for k, v in tgt_vocab.items()}
+    processor = load_processor()
 
     print(f"encoder in : {[(i.name, i.shape) for i in enc.get_inputs()]}")
     print(f"decoder in : {[(i.name, i.shape) for i in dec.get_inputs()]}")
@@ -114,10 +118,16 @@ def main() -> int:
 
     total = 0.0
     for text in args.text:
-        ids = encode_source(text, args.src, args.tgt, sp_src, src_vocab)
+        # The reference processor prepends language tags and queues this sentence's
+        # placeholder map. encode_source adds its own tags, so pass only the body.
+        processed = processor.preprocess_batch(
+            [text], src_lang=LANG_TAG[args.src], tgt_lang=LANG_TAG[args.tgt]
+        )[0].split(" ", 2)[2]
+        ids = encode_source(processed, args.src, args.tgt, sp_src, src_vocab)
         unk = sum(1 for i in ids if i == UNK)
         t0 = time.perf_counter()
         got, t_enc, t_dec, n_out = greedy_decode(enc, dec, ids, tgt_inv, args.max_new)
+        got = processor.postprocess_batch([got], lang=LANG_TAG[args.tgt])[0]
         wall = time.perf_counter() - t0
         total += wall
         print(f"  in  : {text}")
