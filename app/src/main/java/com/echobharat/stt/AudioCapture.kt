@@ -64,38 +64,50 @@ class AudioCapture {
             throw IllegalStateException("AudioRecord failed to initialise (state=${recorder.state})")
         }
 
-        recorder.startRecording()
-        if (recorder.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+        try {
+            recorder.startRecording()
+            check(recorder.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
+                "AudioRecord failed to start (state=${recorder.recordingState})"
+            }
+        } catch (e: Exception) {
             recorder.release()
-            throw IllegalStateException("AudioRecord failed to start (state=${recorder.recordingState})")
+            throw e
         }
         Log.i(TAG, "Capture started: ${SAMPLE_RATE}Hz mono PCM16, buffer=$bufferBytes bytes")
 
         val running = java.util.concurrent.atomic.AtomicBoolean(true)
         val worker = thread(name = "echobharat-audio-capture", isDaemon = true) {
             val pcm = ShortArray(FRAME_SAMPLES)
-            while (running.get()) {
-                var filled = 0
-                // read() can return a short count; top the frame up before emitting.
-                while (filled < FRAME_SAMPLES && running.get()) {
-                    val n = recorder.read(pcm, filled, FRAME_SAMPLES - filled)
-                    if (n <= 0) {
-                        if (n < 0) Log.e(TAG, "AudioRecord.read error: $n")
-                        break
+            try {
+                while (running.get()) {
+                    var filled = 0
+                    // read() can return a short count; top the frame up before emitting.
+                    while (filled < FRAME_SAMPLES && running.get()) {
+                        val n = recorder.read(pcm, filled, FRAME_SAMPLES - filled)
+                        if (n <= 0) {
+                            if (!running.get()) return@thread
+                            // A dead/revoked microphone must end capture, not spin forever.
+                            throw IllegalStateException("AudioRecord.read failed: $n")
+                        }
+                        filled += n
                     }
-                    filled += n
-                }
-                if (filled < FRAME_SAMPLES) continue
+                    if (filled < FRAME_SAMPLES) continue
 
-                val frame = FloatArray(FRAME_SAMPLES) { i -> pcm[i] / 32768f }
-                trySend(frame)
+                    val frame = FloatArray(FRAME_SAMPLES) { i -> pcm[i] / 32768f }
+                    val result = trySend(frame)
+                    if (result.isClosed) return@thread
+                    check(result.isSuccess) { "Microphone frame queue overflow; utterance incomplete" }
+                }
+            } catch (e: Exception) {
+                if (running.get()) close(e)
             }
         }
 
         awaitClose {
             running.set(false)
-            runCatching { worker.join(500) }
+            // Unblock a blocking read before joining; never release a recorder still in use.
             runCatching { recorder.stop() }
+            runCatching { worker.join() }
             runCatching { recorder.release() }
             Log.i(TAG, "Capture stopped")
         }

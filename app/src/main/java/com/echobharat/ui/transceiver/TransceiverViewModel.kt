@@ -15,15 +15,13 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.launch
 
 /**
  * State and actions for one conversation.
  *
  * The transcript itself lives in [ConversationRepository]; this holds only what belongs to
- * the screen — above all the push-to-talk transcription, which runs in [viewModelScope]
- * so that rotating the phone or leaving the screen mid-transcription no longer throws the
- * utterance away.
+ * the screen. Released utterances run in the app-wide repository so popping this
+ * ViewModel's navigation entry does not cancel transcription and lose the message.
  */
 class TransceiverViewModel(
     app: Application,
@@ -60,13 +58,14 @@ class TransceiverViewModel(
 
     fun startTalking(lang: String) = stt.startListening(lang)
 
+    fun isSpeechInstalled(lang: String): Boolean = stt.isAvailable(lang)
+
+    /** Loads the speech model ahead of the first press. */
+    fun prepareSpeech(lang: String) = stt.prepare(lang)
+
     /** Ends the utterance; transcription and sending continue even if the screen goes. */
-    fun stopTalking(peer: Peer, lang: String, alert: Boolean) {
-        viewModelScope.launch {
-            val heard = stt.stopAndTranscribe(lang) ?: return@launch
-            repository.sendSpeech(peer, heard, lang, alert)
-        }
-    }
+    fun stopTalking(peer: Peer, lang: String, alert: Boolean) =
+        repository.finishSpeech(peer, lang, alert)
 
     fun readAloud(msgId: String) = repository.readAloud(msgId)
 

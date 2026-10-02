@@ -104,6 +104,19 @@ fun TransceiverScreen(
         onDispose { vm.onHidden() }
     }
 
+    // Warm the speech model as soon as the chat opens, the language changes, or a pack
+    // finishes installing (noticed by polling the disk, since installs happen on another
+    // screen). Without this the first press paid for a multi-second load.
+    LaunchedEffect(selectedLanguage) {
+        var wasInstalled = false
+        while (true) {
+            val installed = vm.isSpeechInstalled(selectedLanguage)
+            if (installed && !wasInstalled) vm.prepareSpeech(selectedLanguage)
+            wasInstalled = installed
+            kotlinx.coroutines.delay(1_500)
+        }
+    }
+
     // Follow the conversation as it grows.
     LaunchedEffect(entries.size) {
         if (entries.isNotEmpty()) listState.animateScrollToItem(entries.lastIndex)

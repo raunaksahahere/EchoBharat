@@ -11,6 +11,7 @@ import com.echobharat.models.ModelStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -60,10 +61,15 @@ class SttManager(private val context: Context) {
         data class Unavailable(val reason: SttUnavailable) : State
     }
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    // Serialize capture ownership and buffer changes on Main; native inference stays off it.
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val lifecycleLock = Mutex()
     private val store = ModelStore(context)
     private val capture = AudioCapture()
     private val loadLock = Mutex()
+
+    /** Separate from [loadLock] so the small VAD never queues behind a multi-second model load. */
+    private val vadLock = Mutex()
 
     /** Held for the whole of an inference, so [release] cannot close a session mid-run. */
     private val useLock = Mutex()
@@ -124,7 +130,10 @@ class SttManager(private val context: Context) {
             return@withLock null
         }
 
-        val loaded = withContext(Dispatchers.IO) {
+        // NonCancellable: a model takes seconds to load, and the load used to be thrown away
+        // whenever the button was released first, so a short press never got a result no
+        // matter how many times it was retried.
+        val loaded = withContext(Dispatchers.IO + NonCancellable) {
             IndicConformerStt.load(lang, modelFile, tokensFile)
         }
         if (loaded == null) {
@@ -134,52 +143,93 @@ class SttManager(private val context: Context) {
         loaded
     }
 
-    private suspend fun vadOrLoad(): SileroVad? = loadLock.withLock {
+    private suspend fun vadOrLoad(): SileroVad? = vadLock.withLock {
         vad?.let { return@withLock it }
-        val loaded = withContext(Dispatchers.IO) { SileroVad.load(context) }
+        val loaded = withContext(Dispatchers.IO + NonCancellable) { SileroVad.load(context) }
         vad = loaded
         loaded
     }
 
     /**
+     * Loads the model for [lang] in the background so the first press does not have to wait
+     * for it. Call when a conversation opens, the language changes, or a pack finishes
+     * installing; it is a no-op for a language that is already resident or not installed.
+     */
+    fun prepare(lang: String) {
+        if (!isAvailable(lang)) return
+        // A pack installed since the last failed press: the "model missing" notice is stale.
+        val current = _state.value
+        if (current is State.Unavailable && current.reason is SttUnavailable.ModelMissing) {
+            _state.value = State.Idle
+        }
+        scope.launch { useLock.withLock { engineFor(lang) } }
+    }
+
+    /**
      * Begins capturing. Call [stopAndTranscribe] to finish the utterance.
      *
+     * The microphone opens at once; a cold model keeps loading behind it and
+     * [stopAndTranscribe] waits for it, so the words spoken while it loads are not lost.
      * Safe to call when the model is missing — it reports [State.Unavailable] rather
      * than throwing, so push-to-talk never crashes the UI.
      */
     fun startListening(lang: String) {
-        if (captureJob != null) {
+        scope.launch {
+            // A press during transcription/trim is not allowed to replace its buffers.
+            if (!lifecycleLock.tryLock()) {
+                Log.i(TAG, "Ignoring press while speech is finishing or being released")
+                return@launch
+            }
+            try { beginListening(lang) } finally { lifecycleLock.unlock() }
+        }
+    }
+
+    @android.annotation.SuppressLint("MissingPermission") // Checked below; capture also handles revocation.
+    private fun beginListening(lang: String) {
+        if (captureJob?.isActive == true) {
             Log.w(TAG, "startListening ignored: already capturing")
             return
         }
+        captureJob = null
         if (!hasMicPermission()) {
             Log.e(TAG, "STT_UNAVAILABLE: RECORD_AUDIO not granted")
             _state.value = State.Unavailable(SttUnavailable.PermissionDenied)
+            return
+        }
+        // Checked against the disk on every press, so installing a pack takes effect at once.
+        if (!isAvailable(lang)) {
+            val missing = missingFiles(lang)
+            Log.e(TAG, "STT_UNAVAILABLE[$lang]: missing ${missing.joinToString()}")
+            _state.value = State.Unavailable(SttUnavailable.ModelMissing(lang, missing))
             return
         }
 
         buffer.clear()
         preroll.clear()
         sawSpeech = false
+        _state.value = State.Listening(speech = false, level = 0f)
+        prepare(lang)
 
         captureJob = scope.launch {
-            // Warm the models before opening the mic so the first words are not lost.
-            val detector = vadOrLoad()
-            if (engineFor(lang) == null) return@launch
-
-            detector?.reset()
-            _state.value = State.Listening(speech = false, level = 0f)
-            Log.i(TAG, "Listening [$lang] (vad=${if (detector != null) "on" else "off"})")
-
+            var detector: SileroVad? = null
+            var vadReady = false
             try {
                 capture.frames().collect { frame ->
+                    // Start the microphone before loading even the small VAD. The bounded
+                    // capture channel retains those first frames while the VAD initializes.
+                    if (!vadReady) {
+                        detector = vadOrLoad()
+                        detector?.reset()
+                        vadReady = true
+                        Log.i(TAG, "Listening [$lang] (vad=${if (detector != null) "on" else "off"})")
+                    }
                     if (buffer.size >= MAX_UTTERANCE_SAMPLES) return@collect
 
                     var level = 0f
                     for (s in frame) level = maxOf(level, abs(s))
 
                     // Without a VAD we still work — we simply keep everything.
-                    val prob = detector?.speechProbability(frame)
+                    val prob = withContext(Dispatchers.Default) { detector?.speechProbability(frame) }
                     val isSpeech = prob == null || prob >= SPEECH_THRESHOLD
 
                     if (isSpeech) {
@@ -200,6 +250,8 @@ class SttManager(private val context: Context) {
 
                     _state.value = State.Listening(speech = isSpeech, level = level)
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Throwable) {
                 Log.e(TAG, "CAPTURE_FAILED: ${e.javaClass.simpleName}: ${e.message}", e)
                 _state.value = State.Unavailable(SttUnavailable.LoadFailed(lang, e.message ?: "capture failed"))
@@ -212,13 +264,21 @@ class SttManager(private val context: Context) {
      *
      * @return the recognised utterance, or null when nothing usable was heard.
      */
-    suspend fun stopAndTranscribe(lang: String): Transcript? {
+    suspend fun stopAndTranscribe(lang: String): Transcript? = withContext(Dispatchers.Main.immediate) {
+        lifecycleLock.withLock { finishListening(lang) }
+    }
+
+    private suspend fun finishListening(lang: String): Transcript? {
         captureJob?.cancelAndJoin()
         captureJob = null
 
         val samples = buffer.toFloatArray()
         buffer.clear()
         preroll.clear()
+        if (_state.value is State.Unavailable) {
+            sawSpeech = false
+            return null // Never send a partial utterance after a recorder/queue failure.
+        }
 
         if (!sawSpeech || samples.isEmpty()) {
             Log.i(TAG, "No speech detected in utterance (${samples.size} samples)")
@@ -241,6 +301,8 @@ class SttManager(private val context: Context) {
                 val active = engineFor(lang) ?: return null
                 withContext(Dispatchers.Default) { active.transcribe(samples) }
             }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Throwable) {
             Log.e(TAG, "TRANSCRIBE_FAILED[$lang]: ${e.javaClass.simpleName}: ${e.message}", e)
             null
@@ -257,11 +319,14 @@ class SttManager(private val context: Context) {
     /** Aborts the current utterance without transcribing. */
     fun cancel() {
         scope.launch {
-            captureJob?.cancelAndJoin()
-            captureJob = null
-            buffer.clear()
-            preroll.clear()
-            settle()
+            lifecycleLock.withLock {
+                captureJob?.cancelAndJoin()
+                captureJob = null
+                buffer.clear()
+                preroll.clear()
+                sawSpeech = false
+                settle()
+            }
         }
     }
 
@@ -281,15 +346,24 @@ class SttManager(private val context: Context) {
      */
     fun release() {
         scope.launch {
-            captureJob?.cancelAndJoin()
-            captureJob = null
-            useLock.withLock { loadLock.withLock {
-                runCatching { engine?.close() }
-                engine = null
-                runCatching { vad?.close() }
-                vad = null
-            } }
-            settle()
+            lifecycleLock.withLock {
+                captureJob?.cancelAndJoin()
+                captureJob = null
+                buffer.clear()
+                preroll.clear()
+                sawSpeech = false
+                useLock.withLock {
+                    loadLock.withLock {
+                        runCatching { engine?.close() }
+                        engine = null
+                    }
+                    vadLock.withLock {
+                        runCatching { vad?.close() }
+                        vad = null
+                    }
+                }
+                settle()
+            }
         }
     }
 }

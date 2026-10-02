@@ -64,8 +64,13 @@ class IndicConformerStt private constructor(
                     .onFailure { Log.i(TAG, "NNAPI unavailable, using CPU: ${it.message}") }
             }
 
-            val session = env.createSession(modelFile.absolutePath, opts)
-            val layout = describe(session)
+            val session = opts.use { env.createSession(modelFile.absolutePath, it) }
+            val layout = try {
+                describe(session)
+            } catch (e: Throwable) {
+                session.close()
+                throw e
+            }
             Log.i(
                 TAG,
                 "Loaded '$lang' from ${modelFile.name} (${modelFile.length()} bytes), " +
@@ -217,7 +222,7 @@ class IndicConformerStt private constructor(
             Log.i(
                 TAG,
                 "STT[$lang] ${"%.2f".format(seconds)}s audio in ${elapsed}ms " +
-                    "(RTF ${"%.2f".format(elapsed / 1000f / seconds)}) -> ${text?.let { "\"$it\"" } ?: "null"}"
+                    "(RTF ${"%.2f".format(elapsed / 1000f / seconds)}), chars=${text?.length ?: 0}"
             )
             text
         } catch (e: Throwable) {

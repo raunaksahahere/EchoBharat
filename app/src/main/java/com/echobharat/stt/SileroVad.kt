@@ -48,7 +48,7 @@ class SileroVad private constructor(
                 setIntraOpNumThreads(1)
                 setInterOpNumThreads(1)
             }
-            SileroVad(env, env.createSession(cached.absolutePath, opts)).also {
+            SileroVad(env, opts.use { env.createSession(cached.absolutePath, it) }).also {
                 Log.i(TAG, "VAD loaded")
             }
         } catch (e: Throwable) {

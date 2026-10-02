@@ -44,6 +44,7 @@ internal fun PushToTalkButton(
     var pressed by remember { mutableStateOf(false) }
     // The gesture handler outlives recompositions; read the latest callbacks through
     // these, or a language or alert-mode change mid-conversation would be ignored.
+    val currentState by rememberUpdatedState(sttState)
     val currentOnPress by rememberUpdatedState(onPress)
     val currentOnRelease by rememberUpdatedState(onRelease)
     val currentOnRequestPermission by rememberUpdatedState(onRequestPermission)
@@ -77,11 +78,18 @@ internal fun PushToTalkButton(
                                 currentOnRequestPermission()
                                 return@detectTapGestures
                             }
+                            if (currentState is SttManager.State.Transcribing) return@detectTapGestures
+                            // Keep the language, peer and alert mode from the start of this utterance.
+                            val release = currentOnRelease
                             pressed = true
-                            currentOnPress()
-                            tryAwaitRelease()
-                            pressed = false
-                            currentOnRelease()
+                            try {
+                                currentOnPress()
+                                tryAwaitRelease()
+                            } finally {
+                                // Disposal/rotation cancels this coroutine, not just the pointer gesture.
+                                pressed = false
+                                release()
+                            }
                         }
                     )
                 },
