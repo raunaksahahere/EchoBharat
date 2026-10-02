@@ -257,6 +257,84 @@ rather than failing silently. Sideload path for testing:
 **Not present, contrary to earlier assumption:** Nostr was never ported (constants only),
 and offline translation (Phase 4) has no code yet.
 
+## Audit repair pass — 2 Oct 2026
+
+Data flow rechecked: PTT → AudioRecord → Silero → IndicConformer → app-wide conversation
+log/private outbox → Noise/BLE → authenticated receive → receiver-language translation →
+serial TTS playback. Downloads/imports are provisioning-only and require manifest SHA-256.
+
+**Baseline actually run:** `testDebugUnitTest assembleDebug lintDebug`: 73 discovered tests,
+72 passed and one opt-in desktop test skipped; debug APK built. Lint reported 39 errors,
+89 warnings and 8 hints despite a successful task exit (`abortOnError=false`).
+
+**Repairs in this pass (uncommitted):**
+- Noise replay-window direction/large nonce jumps; delivery/read receipt recipient checks;
+  fragment endpoint isolation and inner/outer agreement; unsupported MTU fails closed;
+  retry queue retains its original expiry; SOS cancellation tombstones are sender-scoped,
+  fresh-fix/cancellation transitions serialized, and announcement lifetime bounded.
+- STT prefetch observes the inference lock; capture/finish/trim ownership is serialized;
+  trim discards captured samples. Gesture cleanup runs on disposal and retains the press's
+  language/peer/alert settings. Released speech belongs to the repository, not a popped
+  ViewModel. Microphone failures/overflow fail explicitly instead of spinning/dropping frames.
+- AudioTrack waits for playback-head completion, reports write failures, serializes playback,
+  restores alarm volume on initialization failures, and bounds its streaming buffer. Added
+  the required normal `MODIFY_AUDIO_SETTINGS` permission.
+- Same-size corrupt model imports are repaired by hash; corrupt resumed prefixes/HTTP 416
+  restart from scratch. Model and history publication now use atomic moves rather than
+  copying onto visible final names.
+- Failed translations can retry after installation; read-aloud refreshes the current target.
+  Over-limit translation input fails explicitly rather than silently translating a prefix.
+  Live history wins over older duplicate entries; incomplete records are filtered and unknown
+  history schemas quarantined. Removed speech contents from STT/TTS diagnostics and closed
+  native model resources when multi-stage loads fail.
+- Pre-Android-11 location listeners implement the older abstract callbacks; a single GPS
+  provider receives the full requested timeout. Python translation helper now uses the
+  reference IndicProcessor and all ten language tags.
+
+**Verification:** final `testDebugUnitTest assembleDebug assembleRelease lintDebug` passed:
+137 discovered tests, 136 passed, one opt-in desktop-model assumption skip, zero failures/errors.
+The opt-in real-model IndicTrans2 test then passed all 3 tests, including the 270-case
+cacheless/cached corpus and Indian-language pivot, using manifest-verified model files. Two
+Python helper regressions passed; all eight export scripts parsed. The Android regex
+instrumentation test passed on both connected phones, and the all-language device matrix
+passed 90/90 directions on each phone. `assembleRelease` completed with R8;
+this establishes buildability, not device runtime equivalence. Manifest audit matched 57/57
+published entries: 33 large files against remote LFS metadata, 24 small files downloaded and
+hashed (~9.19 MB). Large model payloads were not downloaded. Five unpublished Odia voice
+entries remain deliberately unavailable.
+
+**Open / do not claim complete:**
+- Relayed SOS JSON still preserves self-asserted origin identity. Sender-scoped cancellation
+  tombstones do not authenticate that origin; an original signed envelope/packet is needed.
+  The precise versioned signed-envelope design and v1.2.0 compatibility boundary are in
+  `docs/SOS-authentication.md`; implementation remains open.
+- Long TTS inputs and the unbounded conversation work queue are now bounded: sentence chunks
+  and native output limits fail visibly, while deferred model work remains in encrypted history;
+  decoder output-budget exhaustion now fails explicitly rather than returning a prefix.
+- Exact STT mel parity/model I/O and acoustic quality have not been established with real
+  models in this checkout. Desktop and device translation are proven, but the published
+  dynamic int8 FastPitch voice model fails to initialize on the tested phones because their
+  ONNX Runtime reports `ConvInteger` as unsupported; a mobile-compatible TTS export is still
+  required.
+- Lint errors are repaired without blanket suppression or policy weakening: the post-repair
+  run reports 0 errors, 87 warnings, 8 hints. Remaining warnings are inherited or advisory.
+  API-26 theme resources and BLE permission/revocation cleanup now have compatibility tests.
+- Two authorized phones are now connected: RMX3741 (Android 15/API 35, arm64) and CPH2705IN
+  (Android 15/API 35, arm64). Debug install, cold launch, direct encrypted text delivery and
+  delivery receipt succeeded. A clean-install universal release APK also launched on both,
+  initialized identities, and discovered the other phone with no post-init app errors.
+  Hindi/English speech packs and both translation families were SHA-256 checked against the
+  bundled manifest before use. An Android regex compatibility test passes on both, and the
+  all-language real-model matrix passes 90/90 directions on each. The OPPO's long-press PTT
+  produced a delivered speech message (`no.`), but no controlled spoken phrase was supplied;
+  FastPitch then exposed an on-device `ConvInteger` implementation gap, so acoustic quality
+  and TTS are not complete. Two/three-phone relay and SOS-origin authentication proof remain
+  open.
+
+Next: provision both translation families to the second phone, run the all-language matrix,
+exercise SOS cancellation and relay behavior with a third phone, and perform controlled spoken
+phrases/latency measurements. No staged changes, commits or publication.
+
 ## Notes
 - Any 🧑 row that slips is a red flag — those cannot be recovered by adding AI effort. Re-plan scope, don't cram.
 - Keep the M2 voice loop demo-ready at all times after Day 5, even while adding features.

@@ -364,22 +364,33 @@ honest bar for a project like this.
 
 - ✅ **Voice packs for nine languages** — recognition and synthesis, downloadable in-app,
   SHA-256 verified. Each synthesis model passed spectral checks and ships a sample WAV.
-- ✅ **Translation between all ten languages** — verified on the desktop: the Kotlin
-  translator reproduces AI4Bharat's reference pipeline exactly on 270 translations across
-  nine languages, cacheless and KV-cached.
+- ✅ **Translation routes cover all ten languages** — English ↔ each Indian language uses
+  one IndicTrans2 family; every Indian ↔ Indian pair uses the two-family English pivot.
+  The receiving phone performs translation, including text-only Odia. The Kotlin desktop
+  test reproduces the available reference corpus exactly on 270 translations, cacheless
+  and KV-cached; real-device inference still depends on the two verified family packs being
+  installed.
 - ✅ **Built and unit-tested** — mesh transport and private-message outbox, identity and
   discovery, conversations and delivery state, typed text, read-aloud, alert mode,
-  push-to-talk, distress calls, multi-hop peers, resumable downloads, and phone-to-phone
-  pack and app sharing.
-- ⏳ **Not yet proven on hardware** — two-phone discovery and delivery, SOS propagation across
-  relays, push-to-talk capture, and spoken end-to-end latency. None of this can be honestly
-  claimed from a desktop; BLE in particular behaves differently per radio and per
-  manufacturer's power management.
-- 📋 **Next** — the hardware run above, recognition for Odia, and beam search if greedy
-  translation proves too literal in the field.
+  push-to-talk, distress calls, multi-hop peers, resumable downloads, all 90 directed
+  translation routes across ten languages, and phone-to-phone pack and app sharing.
+- ✅ **Phone-proven text path** — two Android 15 phones discovered each other, exchanged
+  encrypted text with a delivery receipt, translated the received SOS, and completed 90/90
+  directed translation pairs on each phone, including Odia text and Indian-language pivots.
+- ⚠ **Speech remains hardware-limited** — microphone capture and STT produced a delivered
+  speech message in a smoke test, but the phrase was uncontrolled. The published dynamic
+  int8 FastPitch model currently fails on these phones with ONNX Runtime
+  `ConvInteger` not implemented, so spoken TTS and voice quality are not claimed complete.
+  BLE relay, three-phone propagation, controlled acoustic accuracy, and spoken latency still
+  require targeted hardware runs.
+- 📋 **Next** — publish a mobile-compatible TTS quantization (or float fallback), then run
+  controlled speech accuracy/latency tests; recognition for Odia and beam search remain
+  future work.
 
-No performance numbers are quoted here, because none have been measured on a phone yet. The
-*Show timings* switch exists so the first person to run it can fill this in.
+Translation was measured during the all-language phone matrix: cacheless per-hop inference
+was roughly 200–600 ms on the tested phones, while model swaps dominate end-to-end matrix time. No controlled speech latency or acoustic-quality number is quoted because the
+installed FastPitch TTS model failed to initialize on-device; the *Show timings* switch remains ready
+for a corrected voice pack.
 
 ## 🏷️ About the name
 
