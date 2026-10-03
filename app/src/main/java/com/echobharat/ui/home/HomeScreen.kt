@@ -3,6 +3,8 @@ package com.echobharat.ui.home
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -41,12 +43,14 @@ import kotlinx.coroutines.launch
  * a peer — it goes to everyone in range and must stay reachable without first picking
  * someone.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun HomeScreen(
     meshManager: EchoBharatMeshManager,
     onOpenPeer: (Peer) -> Unit,
     onOpenLanguages: () -> Unit,
-    onVerifyPeer: (Peer) -> Unit
+    onVerifyPeer: (Peer) -> Unit,
+    onPanicWipe: () -> Unit
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val peers by meshManager.connectedPeers.collectAsState()
@@ -60,6 +64,7 @@ fun HomeScreen(
 
     var query by remember { mutableStateOf("") }
     var showSosDialog by remember { mutableStateOf(false) }
+    var showPanicWipeConfirm by remember { mutableStateOf(false) }
 
     // Match on name, device model and peer id: in a crowd the display name is often the
     // least distinctive thing about a node.
@@ -100,7 +105,12 @@ fun HomeScreen(
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold,
                     color = AccentSaffron,
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier
+                        .weight(1f)
+                        .combinedClickable(
+                            onClick = {},
+                            onLongClick = { showPanicWipeConfirm = true }
+                        )
                 )
                 // The app spreads the way the mesh does: phone to phone, no store, no
                 // connection. The receiver taps the file and installs.
@@ -201,6 +211,22 @@ fun HomeScreen(
                 }
             }
         }
+    }
+
+    if (showPanicWipeConfirm) {
+        AlertDialog(
+            onDismissRequest = { showPanicWipeConfirm = false },
+            title = { Text("Erase this phone's identity?") },
+            text = { Text("This permanently clears identity keys, verified contacts, peer state, and encrypted conversations. The app will return to onboarding with a fresh identity.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showPanicWipeConfirm = false
+                    onPanicWipe()
+                }) { Text("Erase everything", color = AccentAlert, fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = { TextButton(onClick = { showPanicWipeConfirm = false }) { Text("Cancel") } },
+            containerColor = SurfaceCard
+        )
     }
 
     if (showSosDialog) {

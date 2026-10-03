@@ -65,6 +65,13 @@ internal class ConversationStore(
         }
     }
 
+    fun delete() {
+        file.delete()
+        File(file.parentFile, "${file.name}.unreadable").delete()
+    }
+
+    fun destroyKey() = cipher.destroyKey()
+
     fun save(conversations: Collection<Conversation>) {
         try {
             file.parentFile?.mkdirs()

@@ -15,7 +15,9 @@ import com.echobharat.mesh.transport.MeshService
 import com.echobharat.schema.EchoBharatMessage
 import com.echobharat.schema.MessageType
 import com.echobharat.schema.Peer
+import com.echobharat.services.AppStateStore
 import com.echobharat.services.VerificationService
+import com.echobharat.conversation.ConversationRepository
 import com.echobharat.util.dataFromHexString
 import com.echobharat.services.meshgraph.MeshGraphService
 import com.echobharat.services.meshgraph.RoutePlanner
@@ -295,6 +297,18 @@ class EchoBharatMeshManager(private val context: Context) : MeshDelegate {
         val key = meshService?.getPeerInfo(peerId)?.signingPublicKey ?: return null
         return secureIdentityState.generateFingerprint(key).take(12).uppercase()
             .chunked(4).joinToString(" ")
+    }
+
+    /** Wipes all identity, peer, conversation, transport, and Keystore-backed state. */
+    fun panicWipe() {
+        stopMesh()
+        runCatching { meshService?.clearAllInternalData() }
+        runCatching { meshService?.clearAllEncryptionData() }
+        runCatching { ConversationRepository.getInstance(context).panicWipe() }
+        runCatching { secureIdentityState.clearIdentityData() }
+        runCatching { identityManager.clearIdentityData() }
+        AppStateStore.clear()
+        verificationRevision.value++
     }
 
     fun myVerificationQr(): String? {

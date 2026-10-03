@@ -131,7 +131,13 @@ class MainActivity : ComponentActivity() {
                                 onOpenLanguages = {
                                     currentScreen = AppScreen.LANGUAGES
                                 },
-                                onVerifyPeer = { verificationPeer = it }
+                                onVerifyPeer = { verificationPeer = it },
+                                onPanicWipe = {
+                                    verificationPeer = null
+                                    activePeer = null
+                                    meshManager.panicWipe()
+                                    currentScreen = AppScreen.ONBOARDING
+                                }
                             )
                         }
 

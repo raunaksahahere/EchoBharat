@@ -181,6 +181,13 @@ class IdentityManager(private val context: Context) {
         return Base64.decode(privateKey, Base64.NO_WRAP)
     }
 
+    /** Synchronously removes the app identity so the next launch/onboarding creates fresh keys. */
+    fun clearIdentityData(): Boolean {
+        val cleared = prefs.edit().clear().commit()
+        if (cleared) AppStateStore.setNickname("")
+        return cleared
+    }
+
     /**
      * Checks if initial identity onboarding is complete.
      */

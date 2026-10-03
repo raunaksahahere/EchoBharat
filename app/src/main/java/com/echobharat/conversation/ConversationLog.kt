@@ -158,4 +158,10 @@ class ConversationLog(private val maxEntries: Int = MAX_ENTRIES) {
         c.entries.forEach { index.remove(it.msgId) }
         _state.value = _state.value - peerId
     }
+
+    @Synchronized
+    fun clearAll() {
+        index.clear()
+        _state.value = emptyMap()
+    }
 }
