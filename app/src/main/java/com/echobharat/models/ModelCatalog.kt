@@ -82,7 +82,9 @@ object ModelCatalog {
                 displayName = o.getString("displayName"),
                 nativeName = o.getString("nativeName"),
                 bundled = o.optBoolean("bundled", false),
-                models = parseSpecs(o.getJSONArray("models"))
+                models = parseSpecs(o.getJSONArray("models")),
+                packVersion = o.optInt("packVersion", 1).coerceAtLeast(1),
+                legacyModels = parseSpecs(o.optJSONArray("legacyModels"))
             )
         }
 

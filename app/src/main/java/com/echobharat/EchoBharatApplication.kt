@@ -8,6 +8,7 @@ import com.echobharat.identity.IdentityManager
 import com.echobharat.mesh.service.MeshForegroundService
 import com.echobharat.mesh.service.MeshServicePreferences
 import com.echobharat.mesh.transport.PowerManager
+import com.echobharat.models.ModelManager
 
 /**
  * Main application class for EchoBharat.
@@ -61,6 +62,10 @@ class EchoBharatApplication : Application() {
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start MeshForegroundService: ${e.message}", e)
         }
+
+        // Process-wide provisioning resumes on Wi-Fi after an interrupted APK/pack update.
+        // A single manager also serves Language Packs; metered use requires UI consent.
+        ModelManager.getInstance(this).start()
 
         Log.i(TAG, "EchoBharat Application initialized successfully")
     }

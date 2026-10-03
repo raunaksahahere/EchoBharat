@@ -24,6 +24,7 @@ class VoicePreferences private constructor(context: Context) {
         private const val KEY_ACTIVE = "active_language"
         private const val KEY_AUTO_SPEAK = "auto_speak"
         private const val KEY_SHOW_TIMINGS = "show_timings"
+        private const val KEY_AUTO_UPDATE_VOICE_PACKS = "auto_update_voice_packs"
 
         /** Bundled out of the box, so the app is useful before any download. */
         val DEFAULT_LANGUAGES = setOf("hi", "en")
@@ -61,6 +62,11 @@ class VoicePreferences private constructor(context: Context) {
     private val _showTimings = MutableStateFlow(prefs.getBoolean(KEY_SHOW_TIMINGS, false))
     val showTimings: StateFlow<Boolean> = _showTimings.asStateFlow()
 
+    private val _autoUpdateVoicePacks = MutableStateFlow(
+        prefs.getBoolean(KEY_AUTO_UPDATE_VOICE_PACKS, true)
+    )
+    val autoUpdateVoicePacks: StateFlow<Boolean> = _autoUpdateVoicePacks.asStateFlow()
+
     fun enable(lang: String) {
         val next = _enabledLanguages.value + lang
         persistLanguages(next)
@@ -97,6 +103,11 @@ class VoicePreferences private constructor(context: Context) {
     fun setShowTimings(enabled: Boolean) {
         _showTimings.value = enabled
         prefs.edit().putBoolean(KEY_SHOW_TIMINGS, enabled).apply()
+    }
+
+    fun setAutoUpdateVoicePacks(enabled: Boolean) {
+        _autoUpdateVoicePacks.value = enabled
+        prefs.edit().putBoolean(KEY_AUTO_UPDATE_VOICE_PACKS, enabled).apply()
     }
 
     private fun persistLanguages(next: Set<String>) {

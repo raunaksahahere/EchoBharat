@@ -4,6 +4,8 @@ import android.content.Context
 import android.util.Log
 import com.echobharat.models.ModelCatalog
 import com.echobharat.models.ModelRole
+import com.echobharat.models.LanguageModelSpec
+import com.echobharat.BuildConfig
 import com.echobharat.models.ModelStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -55,6 +57,7 @@ class TtsManager(private val context: Context) {
     val state: StateFlow<State> = _state.asStateFlow()
 
     private var engine: TtsEngine? = null
+    private var engineFingerprint: String? = null
 
     /** True when [lang] has every TTS file it needs on disk. */
     fun isAvailable(lang: String): Boolean {
@@ -68,23 +71,24 @@ class TtsManager(private val context: Context) {
     }
 
     private suspend fun engineFor(lang: String): TtsEngine? = loadLock.withLock {
-        engine?.let { if (it.lang == lang) return@withLock it }
-
-        engine?.let {
-            Log.i(TAG, "Switching TTS ${it.lang} -> $lang; unloading previous")
-            runCatching { it.close() }
-            engine = null
-        }
-
         val spec = ModelCatalog.byLang(context, lang)
         if (spec == null) {
             Log.e(TAG, "TTS_UNAVAILABLE[$lang]: not in manifest")
             return@withLock null
         }
 
-        val acoustic = spec.of(ModelRole.TTS_ACOUSTIC)?.let { store.resolve(lang, it) }
-        val vocoder = spec.of(ModelRole.TTS_VOCODER)?.let { store.resolve(lang, it) }
-        val tokens = spec.of(ModelRole.TTS_TOKENS)?.let { store.resolve(lang, it) }
+        // Resolve a whole generation once, on IO. A new manifest cannot mix an old
+        // acoustic model with a partly installed new vocoder or bypass the hash check.
+        val selected = withContext(Dispatchers.IO) { store.voices.resolve(spec) }
+        engine?.let {
+            if (it.lang == lang && selected?.fingerprint == engineFingerprint) return@withLock it
+            runCatching { it.close() }
+            engine = null
+            engineFingerprint = null
+        }
+        val acoustic = selected?.files?.get(ModelRole.TTS_ACOUSTIC)
+        val vocoder = selected?.files?.get(ModelRole.TTS_VOCODER)
+        val tokens = selected?.files?.get(ModelRole.TTS_TOKENS)
 
         if (acoustic == null || vocoder == null || tokens == null) {
             val missing = missingFiles(lang)
@@ -97,8 +101,12 @@ class TtsManager(private val context: Context) {
             FastPitchTts.load(lang, acoustic, vocoder, tokens)
         }
         if (loaded == null) {
-            _state.value = State.Unavailable(TtsUnavailable.LoadFailed(lang, "ONNX session could not be created"))
+            withContext(Dispatchers.IO) { store.voices.recordLoadFailure(spec) }
+            _state.value = State.Unavailable(TtsUnavailable.LoadFailed(lang, "Voice needs updating"))
+        } else {
+            withContext(Dispatchers.IO) { store.voices.clearLoadFailure(spec) }
         }
+        engineFingerprint = selected?.fingerprint
         engine = loaded
         loaded
     }
@@ -154,6 +162,34 @@ class TtsManager(private val context: Context) {
         }
     }
 
+    /** Native-load proof before the candidate pointer changes; never interrupts an utterance. */
+    suspend fun activateVoicePack(spec: LanguageModelSpec): Boolean = utteranceLock.withLock {
+        useLock.withLock {
+            loadLock.withLock {
+                withContext(Dispatchers.IO) {
+                    // Bound resident voices to one. The old files/pointer remain available
+                    // for the next utterance if validation fails.
+                    engine?.close()
+                    engine = null
+                    engineFingerprint = null
+                    val activated = store.voices.activate(spec, BuildConfig.VERSION_CODE) { candidate ->
+                        FastPitchTts.load(
+                            spec.lang,
+                            candidate.files.getValue(ModelRole.TTS_ACOUSTIC),
+                            candidate.files.getValue(ModelRole.TTS_VOCODER),
+                            candidate.files.getValue(ModelRole.TTS_TOKENS)
+                        )?.use { true } ?: false
+                    }
+                    if (!activated) {
+                        store.voices.recordLoadFailure(spec)
+                        _state.value = State.Unavailable(TtsUnavailable.LoadFailed(spec.lang, "Voice needs updating"))
+                    } else _state.value = State.Idle
+                    activated
+                }
+            }
+        }
+    }
+
     /** Stops all remaining normal chunks; an alert in flight continues between chunks too. */
     fun stop() {
         stopGeneration.incrementAndGet()
@@ -171,6 +207,7 @@ class TtsManager(private val context: Context) {
                 loadLock.withLock {
                     runCatching { engine?.close() }
                     engine = null
+                    engineFingerprint = null
                 }
             }
         }

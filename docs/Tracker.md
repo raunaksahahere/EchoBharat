@@ -335,6 +335,39 @@ Next: provision both translation families to the second phone, run the all-langu
 exercise SOS cancellation and relay behavior with a third phone, and perform controlled spoken
 phrases/latency measurements. No staged changes, commits or publication.
 
+## Android voice replacement and automatic pack migration — in progress
+
+- Inspected the exporter: unrestricted dynamic QInt8 quantization is applied to both
+  acoustic and vocoder graphs. Downloaded Hindi published files to
+  `/tmp/echobharat-tts/old/hi/hi/`; all three SHA-256 values match the bundled manifest.
+  A protobuf inspection (not the requested ONNX Python-package validation) found 32
+  `ConvInteger`, 24 `MatMulInteger` and 55 `DynamicQuantizeLinear` nodes in FastPitch;
+  HiFi-GAN contains 74 `ConvInteger` and 66 `DynamicQuantizeLinear` nodes.
+- A diagnostic desktop run using an existing ONNX Runtime **1.29.0**, not the required
+  1.20.0, produced a Hindi WAV and passed spectral checks. Its tokenizer skipped a danda;
+  this is not a mobile-compatibility or listening result, and not release evidence.
+- Implemented local pack generations: current/historical manifest hashes, resumable
+  candidate downloads, native-load validation before atomic activation, on-disk version
+  and per-file hashes, old-file retention, and hash-checked old/new imports. A single
+  process-wide provisioning manager serializes operations and checks again on startup
+  and Wi-Fi reconnect. Metered/non-Wi-Fi transfers require consent; preference changes
+  and network transitions pause automatic downloads without replacing active voices.
+- Added JVM coverage for candidate isolation, hash failure, native validation failure,
+  metadata persistence, old/sideloaded installations, version/hash changes and network
+  gating. Added opt-in device probes for independent legacy-stage loading and an isolated
+  real-file migration/synthesis test. These probes do not prove received-message speech,
+  audible quality, alert-volume behavior, or a complete old-APK/new-APK update.
+- Manifest currently adds only `packVersion: 1`; existing filenames, URLs, sizes and hashes
+  remain unchanged. No new models have been uploaded. Odia remains unpublished.
+
+**Blocked:** `adb devices -l` lists no devices. Checkpoints/fp32 intermediates, the TTS
+export environment and the ONNX Python package are absent from this checkout. Permission
+was requested to fetch upstream checkpoints/dependencies beyond the allowed model repo.
+No candidate format has been selected or benchmarked on either phone. All nine voices,
+real-graph validation, human listening, APK-upgrade behavior on phones, signed-release
+inference and combined-engine peak memory remain unverified. Do not mark a stable TTS
+release complete on the strength of local tests alone.
+
 ## Notes
 - Any 🧑 row that slips is a red flag — those cannot be recovered by adding AI effort. Re-plan scope, don't cram.
 - Keep the M2 voice loop demo-ready at all times after Day 5, even while adding features.

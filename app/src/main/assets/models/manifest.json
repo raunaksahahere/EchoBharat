@@ -24,6 +24,7 @@
   "languages": [
     {
       "lang": "hi",
+      "packVersion": 1,
       "displayName": "Hindi",
       "nativeName": "हिन्दी",
       "bundled": true,
@@ -72,6 +73,7 @@
     },
     {
       "lang": "en",
+      "packVersion": 1,
       "displayName": "English",
       "nativeName": "English (Indian)",
       "bundled": true,
@@ -120,6 +122,7 @@
     },
     {
       "lang": "bn",
+      "packVersion": 1,
       "displayName": "Bengali",
       "nativeName": "বাংলা",
       "bundled": false,
@@ -168,6 +171,7 @@
     },
     {
       "lang": "gu",
+      "packVersion": 1,
       "displayName": "Gujarati",
       "nativeName": "ગુજરાતી",
       "bundled": false,
@@ -216,6 +220,7 @@
     },
     {
       "lang": "kn",
+      "packVersion": 1,
       "displayName": "Kannada",
       "nativeName": "ಕನ್ನಡ",
       "bundled": false,
@@ -264,6 +269,7 @@
     },
     {
       "lang": "ml",
+      "packVersion": 1,
       "displayName": "Malayalam",
       "nativeName": "മലയാളം",
       "bundled": false,
@@ -312,6 +318,7 @@
     },
     {
       "lang": "mr",
+      "packVersion": 1,
       "displayName": "Marathi",
       "nativeName": "मराठी",
       "bundled": false,
@@ -360,6 +367,7 @@
     },
     {
       "lang": "or",
+      "packVersion": 1,
       "displayName": "Odia",
       "nativeName": "ଓଡ଼ିଆ",
       "bundled": false,
@@ -408,6 +416,7 @@
     },
     {
       "lang": "ta",
+      "packVersion": 1,
       "displayName": "Tamil",
       "nativeName": "தமிழ்",
       "bundled": false,
@@ -456,6 +465,7 @@
     },
     {
       "lang": "te",
+      "packVersion": 1,
       "displayName": "Telugu",
       "nativeName": "తెలుగు",
       "bundled": false,

@@ -19,6 +19,8 @@
     <!-- Network: used ONLY by the Model Manager for one-time language-pack downloads.
          Declared here rather than inherited from a library's manifest. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Voice updates wait for unmetered Wi-Fi unless the user approves this connection. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />

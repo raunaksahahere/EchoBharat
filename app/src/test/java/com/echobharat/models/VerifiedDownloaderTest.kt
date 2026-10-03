@@ -141,6 +141,36 @@ class VerifiedDownloaderTest {
     }
 
     @Test
+    fun `metered gating prevents even opening a download request`() = runBlocking {
+        target().writeText("working old model")
+        val result = downloader.download(listOf(url()), target(), sha, 0, mayDownload = { false })
+        assertTrue(result is VerifiedDownloader.Result.Failed)
+        assertEquals(0, server.requestCount)
+        assertEquals("working old model", target().readText())
+    }
+
+    @Test
+    fun `network permission loss pauses a transfer and preserves the active file`() = runBlocking {
+        target().writeText("working old model")
+        server.enqueue(ok(payload))
+        var permitted = true
+        val result = downloader.download(listOf(url()), target(), sha, payload.length.toLong(),
+            mayDownload = { permitted }, onProgress = { permitted = false })
+        assertTrue(result is VerifiedDownloader.Result.Failed)
+        assertEquals(1, server.requestCount)
+        assertEquals("working old model", target().readText())
+        assertTrue(File(temp.root, "model.onnx.part").isFile)
+    }
+
+    @Test
+    fun `wrong hash on replacement never overwrites or deletes the working model`() = runBlocking {
+        target().writeText("working old model")
+        server.enqueue(ok("tampered"))
+        assertTrue(downloader.download(listOf(url()), target(), sha, 0) is VerifiedDownloader.Result.Failed)
+        assertEquals("working old model", target().readText())
+    }
+
+    @Test
     fun `server errors are retried and a partial file is kept for next time`() = runBlocking {
         server.enqueue(MockResponse.Builder().code(503).build())
         server.enqueue(MockResponse.Builder().code(503).build())

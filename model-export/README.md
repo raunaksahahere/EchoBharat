@@ -1,81 +1,168 @@
 # EchoBharat model export
 
-How the on-device speech models are produced and installed.
+## 1. Local TTS v2 candidates — not published or device-verified
 
-STT needs no export — verified int8 ONNX already exists (see §3). Only TTS is built here.
+The tooling targets **Android ONNX Runtime 1.20.0**, with a deliberately conservative
+local gate. Actual speech checkpoints, exported ONNX files, and the export virtual
+environment are absent from this checkout. No real speech graph inspection, model
+hashes, phone tests, pronunciation evidence, or RTF results were produced by this change.
+Existing legacy filenames are not proof that those artifacts are Android-compatible.
 
----
+The new default is **float16 internal weights/operations with `keep_io_types=True`**:
+FastPitch still accepts int64 `[1,T]` tokens and returns float32 `[1,80,F]` mel;
+HiFi-GAN accepts float32 mel and returns float32 `[1,1,S]` or `[1,S]` audio.
+Float16 conversion is a candidate, not a guarantee of smaller latency or CPU kernel support.
 
-## 1. What is already done
+Per language, the exporter retains:
 
-TTS is exported, verified and published for **nine languages** — Hindi, English, Bengali,
-Gujarati, Kannada, Malayalam, Marathi, Tamil and Telugu. Odia is deliberately absent: it
-has no published speech-to-text export, so a voice pack could speak but never listen.
+- `fastpitch-<lang>.fp32.onnx` and any exporter sidecar data.
+- `hifigan-<lang>.fp32.onnx` and any exporter sidecar data.
+- Only after local validation: `fastpitch-<lang>.v2.onnx`, `hifigan-<lang>.v2.onnx`,
+  and `fastpitch-<lang>.v2.tokens.json`.
+- Verification retains `sample-<lang>.wav` for listening, including finite audio flagged
+  as suspect by the spectral heuristics. Invalid/nonfinite data never replaces a WAV.
 
-Re-run the whole batch with `export_batch.py`, which drives the scripts below one language
-at a time and prints a running counter:
+Legacy `.int8.onnx` models and unversioned token tables are never overwritten. The
+exporter refuses an output directory containing any v2 artifact; use a fresh output
+root for another experiment. `--keep-fp32` remains accepted for compatibility but is now
+always in effect. No int8 option is offered: dynamic MatMul-only quantization commonly
+introduces `MatMulInteger` and `DynamicQuantizeLinear`, which conflict with the denylist.
 
+## 2. Fail-closed local gates
+
+`tts_validation.py` is shared by export, verification, and manifest preparation:
+
+- Recursively rejects **`ConvInteger`, `MatMulInteger`, `DynamicQuantizeLinear`** in the
+  main graph, graph-valued and graph-list attributes (including If/Loop bodies), and local
+  function bodies. Relabeling a quantized model `.v2.onnx` cannot bypass this check.
+- Runs the ONNX checker; rejects IR > 10 and standard ONNX opset > 21, outside the
+  ORT 1.20 support ceiling. This is not an exhaustive static kernel allowlist.
+- Requires the app's tensor ranks, static batch/channel sizes, float32 boundary types,
+  and symbolic token/frame/sample axes. Candidates must embed all weights, not depend
+  on a sidecar that the app will not install. Retained fp32 intermediates may use sidecars.
+- Requires **desktop `onnxruntime==1.20.0`**, CPU provider, and actual inference at token
+  lengths **8, 24, 41** and independent vocoder frame lengths **17, 40, 63**. Output
+  lengths must change, all output arrays must be nonempty and finite, and a two-stage
+  probe must run. This catches many baked trace lengths, but does not prove every length.
+- The WAV verifier rejects *any* unmapped input characters (including punctuation),
+  checks mel before the vocoder, checks audio before writing, and reports median/range
+  **RTF = synthesis wall time / produced audio duration**. Timing excludes session loading
+  and warmups; it includes both inference stages and boundary checks, not tokenization.
+
+Only successfully validated candidates are moved out of the staging directory. A rejected
+candidate returns a nonzero exit status; completed fp32 intermediates remain for diagnosis.
+No gate is a replacement for comparison against fp32, listening, or Android execution.
+The old positional-encoding and dynamo tracing workarounds remain in place; runtime probes
+must establish that a particular exporter/checkpoint combination really preserves lengths.
+HiFi-GAN continues using the legacy tracer; FastPitch uses the dynamo exporter.
+
+## 3. Reproduce with locally available dependencies and checkpoints
+
+Run commands from `model-export/`. The lightweight tests need only Python's standard
+library; graph tests explicitly skip if their native dependencies are absent:
+
+```sh
+python3 -m unittest discover -s tests -v
+python3 -m compileall -q export_tts.py verify_tts.py tts_validation.py update_manifest.py export_batch.py tests
 ```
-./ttsenv/bin/python export_batch.py --langs gu mr kn ml ta te bn
+
+For real exports, provision an isolated Python environment with a mutually compatible
+CPU PyTorch/torchaudio, Coqui TTS, NumPy, ONNX, onnxscript, onnxconverter-common, and
+**onnxruntime==1.20.0**. The last version is the requested runtime target, not an inferred
+export-environment lock. No newly validated version pins or lockfile are provided: the
+full environment must be resolved and recorded when actual checkpoints are available.
+Do not silently downgrade model IR or opset numbers to pass a gate; re-export with a
+compatible exporter and validate the resulting graph.
+
+The scripts do not fetch checkpoints. Supply existing local directories:
+
+```text
+extracted/<lang>/fastpitch/config.json
+extracted/<lang>/fastpitch/best_model.pth
+extracted/<lang>/fastpitch/speakers.pth    (when shipped with the checkpoint)
+extracted/<lang>/hifigan/config.json
+extracted/<lang>/hifigan/best_model.pth
 ```
 
-The files land in `out/<lang>/`:
+In that provisioned environment:
 
-| File | Size |
-|---|---|
-| `fastpitch-<lang>.int8.onnx` | ~63 MB |
-| `hifigan-<lang>.int8.onnx` | ~22 MB |
-| `fastpitch-<lang>.tokens.json` | ~1 KB |
-
-Listen to `out/hi/sample-hi.wav` and `out/en/sample-en.wav` to judge voice quality
-before putting these on a phone.
-
-**SHA-256** (recorded so the Model Manager can verify a published download):
-
-```
-878c2359fa9ed88dbf3d7895f380ee9ca025247c722032220970b004b0e0a476  hi/fastpitch-hi.int8.onnx
-2f07c88e30de4594eae9da54cf349262d0185e50172646ca20fd73f7d68383e4  hi/hifigan-hi.int8.onnx
-315cd28bbbad1aa7119f59d778f28b35666cbbfc85c2f748e2146bbf8edafb35  hi/fastpitch-hi.tokens.json
-8ae4c26e5d03ef1b72fba184f9460d2eca1e81362dd4df90839b449ca9faa805  en/fastpitch-en.int8.onnx
-2de17f389fee6b0bcb18b445ee317833530aa86c6720e6ff49eb5b694aa27ff3  en/hifigan-en.int8.onnx
-721ef293934a5f7554f366c57aa48742065cf98349becb0ea66e31b5525e0989  en/fastpitch-en.tokens.json
+```sh
+python export_tts.py --lang hi --ckpt-root extracted --out out-v2
+python verify_tts.py --dir out-v2/hi --lang hi --text 'यहाँ भूकंप आया है' --warmup 1 --runs 5
 ```
 
-## 2. Put the models on a phone
+Use a sentence fully represented by the actual symbol table. Unmapped characters are
+an error, not permission to silently omit words. The selected speaker defaults to ID 0;
+confirm the checkpoint's speaker mapping before drawing voice/gender conclusions.
 
-Nothing needs rebuilding — the app picks these up at runtime.
+To compare fp32 or another candidate, give explicit filenames (relative to `--dir` or
+absolute), and distinct WAV paths. The verifier requires a standalone model; if a retained
+fp32 export has sidecars, first create a separate inlined copy using ONNX in the provisioned
+environment, without deleting the original or its sidecars.
 
-1. Connect the phone and confirm it is visible:
-   ```
-   adb devices
-   ```
-2. Install the app once, so its storage directory exists:
-   ```
-   adb install -r ../app/build/outputs/apk/debug/app-debug.apk
-   ```
-3. Create the model folders:
-   ```
-   adb shell mkdir -p /sdcard/Android/data/com.echobharat/files/models/hi
-   adb shell mkdir -p /sdcard/Android/data/com.echobharat/files/models/en
-   ```
-4. Push the STT models (download them first — see §3) and the TTS models:
-   ```
-   adb push out/hi/. /sdcard/Android/data/com.echobharat/files/models/hi/
-   adb push out/en/. /sdcard/Android/data/com.echobharat/files/models/en/
-   ```
-5. Confirm what landed:
-   ```
-   adb shell ls -l /sdcard/Android/data/com.echobharat/files/models/hi
-   ```
-6. Open the app → **Language Packs**. Hindi and English should read "Ready".
-7. Watch the pipeline while testing:
-   ```
-   adb logcat -s SttManager IndicConformerStt TtsManager FastPitchTts AudioOutput SileroVad
-   ```
+```sh
+python verify_tts.py --dir out-v2/hi --lang hi --text 'यहाँ भूकंप आया है' \
+  --fastpitch fastpitch-hi.v2.onnx --hifigan hifigan-hi.v2.onnx \
+  --tokens fastpitch-hi.v2.tokens.json --wav out-v2/hi/candidate-listen.wav --runs 5
+python export_batch.py --langs hi en gu mr kn ml ta te bn --ckpt-root extracted --out out-v2-batch
+```
 
-The `.wav` files in `out/` are samples only — do not push them.
+The batch is local-only, isolates failures by language, keeps checkpoints/intermediates,
+uses its current Python interpreter unless `--python` is supplied, and retains every
+verification WAV. It never downloads, uploads, or deletes source checkpoints. Missing
+checkpoints/dependencies are failures, not successful exports. Odia is not offered by
+the batch and is explicitly blocked by manifest preparation.
 
-## 3. STT models (no export needed)
+## 4. Transactional manifest preparation (not publication)
+
+Work on a **local manifest copy** while inspecting the migration. Nothing below uploads
+artifacts or establishes that URLs exist:
+
+```sh
+python update_manifest.py --manifest manifest-candidate.json --out out-v2 --langs hi en
+```
+
+The copy must already contain the language entries and exactly one ModelSpec for each
+TTS role. Every requested language must have all three nonempty v2 files. Before replacing
+any manifest bytes, the helper validates token tables, both graphs, exact desktop runtime,
+dynamic execution and end-to-end finite data for every requested pack. Missing languages,
+missing/invalid artifacts, and Odia abort the entire operation; there is no partial update.
+The replacement is a same-directory atomic file rename.
+
+For each requested language it:
+
+- Sets language-level `packVersion` to **2** (refuses newer/unknown versions).
+- Changes TTS `fileName` and URL paths to the new v2 names, clears the old mirror URL,
+  and computes SHA-256/size only from the actual local files.
+- Appends each replaced **complete old ModelSpec dictionary** to language-level
+  `legacyModels`, retaining unknown fields, old hashes/URLs/filenames, and prior legacy
+  entries for backward import. Other models and unrequested languages are untouched.
+- Is idempotent for identical artifacts and refuses different bytes under already
+  recorded v2 names. Changed released artifacts need a future version, not replacement.
+
+`--verify` is a separate explicit **network opt-in**: it downloads each touched URL and
+compares bytes *before* the atomic replacement; any failure leaves the manifest unchanged.
+Do not use it during an offline/local-only task. Without it, URL availability is explicitly
+unverified. Local metadata preparation is not authorization to publish.
+
+## 5. Evidence still required before release
+
+1. Obtain authorized checkpoints and record the actual dependency versions/environment.
+2. Export and inspect the real fp32/candidate graphs; retain gate logs and compare audio
+   against fp32 across short/long, script-specific, and disaster-relevant sentences.
+3. Listen to retained WAVs for each language/speaker; spectral heuristics cannot establish
+   pronunciation or even reliably classify all valid speech.
+4. Run both stages on the target Android build with ORT 1.20.0 and actual device/provider,
+   record dynamic-length results, RTF, memory and failures. Desktop CPU passes do not prove
+   Android kernel availability, mobile performance, or audio playback.
+5. Review legacy pack import and new v2 pack behavior before any separately authorized
+   upload or manifest release. Do not publish Odia.
+
+The current checkout lacks torch, NumPy, ONNX, ONNX Runtime, onnxconverter-common and Coqui
+TTS in the available Python environment. Synthetic/mocked tests are tooling evidence only;
+real-model exports, Android tests, listening and publication remain outstanding.
+
+## 6. STT models (no export needed)
 
 Per-language int8 ONNX exports of the AI4Bharat IndicConformer weights are already
 published under Apache-2.0 at
@@ -88,84 +175,13 @@ B=https://huggingface.co/parismitaglobalsolutions/indicconformer-sherpa-onnx/res
 curl -4 -L -o out/hi/indicconformer-hi.int8.onnx  $B/hi/model.int8.onnx
 curl -4 -L -o out/hi/indicconformer-hi.tokens.txt $B/tokens.txt
 curl -4 -L -o out/en/indicconformer-en.int8.onnx  $B/en/model.int8.onnx
-curl -4 -L -o out/en/indicconformer-en.tokens.txt $B/en/tokens.txt
+curl -4 -L -o out/en/indicconformer-en.tokens.txt $B/tokens.txt
 ```
 
 > Use `curl -4`. This machine resolved `huggingface.co` to IPv6-only addresses that stall.
 
 Available: `as bn en gu hi kn ml mr pa ta te`. **Odia has no published STT export** — it is
 the one gap in the ten languages.
-
-## 4. Exporting another language
-
-Each language pack is a ~1.45 GB download.
-
-1. Fetch the checkpoint (`or`, `gu`, `mr`, `kn`, `ml`, `ta`, `te`, `bn`):
-   ```
-   L=ta
-   curl -4 -L --retry 5 -o checkpoints/$L.zip \
-     https://github.com/AI4Bharat/Indic-TTS/releases/download/v1-checkpoints-release/$L.zip
-   ```
-2. Extract and export:
-   ```
-   unzip -q -o checkpoints/$L.zip -d extracted/
-   ./ttsenv/bin/python export_tts.py --lang $L --ckpt-root extracted --out out
-   ```
-3. Verify it makes sound, in that language's script:
-   ```
-   ./ttsenv/bin/python verify_tts.py --dir out/$L --lang $L --text "<a sentence>"
-   ```
-4. Record the checksums for the manifest:
-   ```
-   sha256sum out/$L/*
-   ```
-5. Reclaim ~1.6 GB:
-   ```
-   rm -rf extracted/$L checkpoints/$L.zip
-   ```
-
-`--speaker-id` selects the voice: **0 = female, 1 = male** (both are trained in every
-pack). The default is 0.
-
-## 5. Environment
-
-Built once, already present in `ttsenv/`. To recreate:
-
-```
-python3 -m venv ttsenv
-./ttsenv/bin/pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
-./ttsenv/bin/pip install "coqui-tts[codec]" "transformers<5" numpy onnx onnxruntime onnxscript
-```
-
-Three pins matter, each learned the hard way:
-
-- **`transformers<5`** — coqui-tts imports XTTS → tortoise → `isin_mps_friendly`, which
-  transformers 5.x removed.
-- **`coqui-tts[codec]`** — torch ≥ 2.9 needs torchcodec for audio IO.
-- **CPU torch** — this machine has an AMD integrated GPU, so the CUDA wheels are ~2 GB of
-  dead weight. Export is a one-shot graph trace; it takes about a minute per model on CPU.
-
-## 6. Notes on the export itself
-
-Three things in `export_tts.py` exist for non-obvious reasons; leave them in place.
-
-- **FastPitch must use the dynamo exporter** (`dynamo=True`). The `fftransformer` encoder
-  is built on `torch.nn.MultiheadAttention`, which bakes the traced sequence length into a
-  Reshape under the legacy TorchScript tracer. The result loads fine and then fails at
-  runtime on any sentence that is not exactly the dummy length. Symptom:
-  `input_shape_size == requested_shape_size was false ... requested shape:{24,1,512}`.
-- **`PositionalEncoding.forward` is patched** to drop its `max_len` guard. That guard is a
-  data-dependent comparison which aborts `torch.export`, and it cannot fire for any real
-  utterance.
-- **Mel orientation is probed eagerly**, not branched on inside `forward`. Coqui emits
-  `[B, T, 80]` and HiFi-GAN wants `[B, 80, T]`; testing `mel.shape[1] != 80` inside the
-  traced function is another data-dependent guard.
-
-HiFi-GAN stays on the legacy tracer, which handles it without complaint.
-
-The two stages are exported separately rather than fused, matching the app's two-stage
-`TtsEngine`: the vocoder is the expensive half and the most likely thing to be swapped or
-requantised later.
 
 ## 7. Translation (IndicTrans2)
 

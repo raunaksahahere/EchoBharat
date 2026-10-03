@@ -35,6 +35,7 @@ class VerifiedDownloader(
     }
 
     private class ChecksumMismatch(val actual: String) : Exception("checksum mismatch")
+    private class NetworkPolicyChanged : Exception("Download paused: network permission changed")
 
     /**
      * Downloads the first source that yields [sha256] into [target].
@@ -46,6 +47,7 @@ class VerifiedDownloader(
         target: File,
         sha256: String,
         expectedBytes: Long,
+        mayDownload: () -> Boolean = { true },
         onProgress: (Float) -> Unit = {}
     ): Result {
         val part = File(target.parentFile, "${target.name}.part")
@@ -56,7 +58,7 @@ class VerifiedDownloader(
                 currentCoroutineContext().ensureActive()
                 val resumed = part.isFile && part.length() > 0
                 try {
-                    val digest = fetch(url, part, expectedBytes, onProgress)
+                    val digest = fetch(url, part, expectedBytes, mayDownload, onProgress)
                     if (!digest.equals(sha256, ignoreCase = true)) throw ChecksumMismatch(digest)
                     // Never stream onto an installable name: a crash or full disk during
                     // a copy would leave an unverified partial model that looks installed.
@@ -66,6 +68,8 @@ class VerifiedDownloader(
                         java.nio.file.StandardCopyOption.REPLACE_EXISTING
                     )
                     return Result.Installed(target)
+                } catch (e: NetworkPolicyChanged) {
+                    return Result.Failed(e.message!!)
                 } catch (e: ChecksumMismatch) {
                     // A resumed prefix can be stale/corrupt even when this source is
                     // healthy (including a 416 for a partial larger than the file).
@@ -86,7 +90,11 @@ class VerifiedDownloader(
     }
 
     /** Streams [url] onto the end of [part], returning the SHA-256 of the whole file. */
-    private suspend fun fetch(url: String, part: File, expectedBytes: Long, onProgress: (Float) -> Unit): String {
+    private suspend fun fetch(
+        url: String, part: File, expectedBytes: Long,
+        mayDownload: () -> Boolean, onProgress: (Float) -> Unit
+    ): String {
+        if (!mayDownload()) throw NetworkPolicyChanged()
         val md = MessageDigest.getInstance("SHA-256")
         var have = if (part.isFile) part.length() else 0L
 
@@ -114,6 +122,7 @@ class VerifiedDownloader(
                     val buf = ByteArray(BUFFER)
                     while (true) {
                         currentCoroutineContext().ensureActive()
+                        if (!mayDownload()) throw NetworkPolicyChanged()
                         val n = input.read(buf)
                         if (n <= 0) break
                         output.write(buf, 0, n)

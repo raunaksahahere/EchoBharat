@@ -67,6 +67,7 @@ fun TransceiverScreen(
     val conversation by vm.conversation.collectAsState()
     val livePeer by vm.livePeer.collectAsState()
     val sttState by vm.stt.state.collectAsState()
+    val ttsState by engines.tts.state.collectAsState()
     val isMeshRunning by meshManager.isMeshRunning.collectAsState()
     val sosAnnouncements by meshManager.sos.announcements.collectAsState()
     val selectedLanguage by voicePrefs.activeLanguage.collectAsState()
@@ -223,6 +224,11 @@ fun TransceiverScreen(
                 }
             }
 
+            if (ttsState is com.echobharat.tts.TtsManager.State.Unavailable) {
+                TextButton(onClick = onOpenLanguages, modifier = Modifier.fillMaxWidth()) {
+                    Text("Voice needs updating — open Language Packs. Text is still available.", color = AccentAlert)
+                }
+            }
             SpeechStatusBar(state = sttState, onOpenLanguages = onOpenLanguages)
 
             Surface(color = SurfaceCard, border = BorderStroke(1.dp, BorderSubtle)) {

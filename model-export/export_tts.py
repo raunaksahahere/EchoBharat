@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """
-Exports AI4Bharat Indic-TTS (Coqui FastPitch + HiFi-GAN V1) to int8 ONNX for EchoBharat.
+Exports local AI4Bharat Indic-TTS checkpoints to guarded float16 candidates for EchoBharat.
 
-Produces, per language:
-    fastpitch-<lang>.int8.onnx    tokens -> mel      [1,T] int64 -> [1,80,F]
-    hifigan-<lang>.int8.onnx      mel    -> audio    [1,80,F]    -> [1,1,S] or [1,S]
-    fastpitch-<lang>.tokens.json  symbol table indexed by token id
+Retains fp32 intermediates and produces, per language:
+    fastpitch-<lang>.v2.onnx         int64 tokens -> float32 mel
+    hifigan-<lang>.v2.onnx           float32 mel -> float32 audio
+    fastpitch-<lang>.v2.tokens.json  symbol table indexed by token id
+
+Candidates must pass recursive graph and dynamic execution checks on desktop ORT 1.20.0.
+These checks do not establish Android kernel availability or speech quality.
 
 The two models are exported separately, matching the app's two-stage TtsEngine: the
 vocoder is the expensive half and is the piece most likely to be swapped or requantised
@@ -21,9 +24,12 @@ import argparse
 import gc
 import json
 import sys
+import tempfile
 from pathlib import Path
 
 import torch
+
+from tts_validation import load_symbols, probe_ids, validate_artifact, validate_pair
 
 
 def log(msg: str) -> None:
@@ -208,7 +214,7 @@ def export_hifigan(ckpt_dir: Path, out_path: Path) -> None:
             str(out_path),
             input_names=["mel"],
             output_names=["audio"],
-            dynamic_axes={"mel": {2: "frames"}, "audio": {2: "samples"}},
+            dynamic_axes={"mel": {2: "frames"}, "audio": {audio.dim() - 1: "samples"}},
             opset_version=17,
             do_constant_folding=True,
             dynamo=False,
@@ -219,20 +225,20 @@ def export_hifigan(ckpt_dir: Path, out_path: Path) -> None:
     gc.collect()
 
 
-# -------------------------------------------------------------------------- quantise
+# -------------------------------------------------------------------------- convert
 
-def quantize(src: Path, dst: Path) -> None:
-    """Dynamic int8 quantisation — weights only, so no calibration set is needed."""
-    from onnxruntime.quantization import QuantType, quantize_dynamic
+def convert_float16(src: Path, dst: Path) -> None:
+    """Keep the app's float32 tensor boundaries; internal fp16 is still only a candidate."""
+    import onnx
+    from onnxconverter_common import float16
 
-    quantize_dynamic(
-        model_input=str(src),
-        model_output=str(dst),
-        weight_type=QuantType.QInt8,
-    )
-    before = src.stat().st_size / 1e6
-    after = dst.stat().st_size / 1e6
-    log(f"  quantised {dst.name}: {before:.1f} MB -> {after:.1f} MB ({after / before:.0%})")
+    model = onnx.load(str(src), load_external_data=True)
+    # Inline weights loaded from dynamo sidecars into the independently installable file.
+    onnx.external_data_helper.convert_model_from_external_data(model)
+    candidate = float16.convert_float_to_float16(model, keep_io_types=True)
+    onnx.save_model(candidate, str(dst), save_as_external_data=False)
+    log(f"  converted {dst.name}: {src.stat().st_size / 1e6:.1f} MB graph -> "
+        f"{dst.stat().st_size / 1e6:.1f} MB (fp32 sidecars retained)")
 
 
 # ------------------------------------------------------------------------------ main
@@ -245,7 +251,8 @@ def main() -> int:
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--speaker-id", type=int, default=0,
                     help="these packs are trained on a male and a female speaker")
-    ap.add_argument("--keep-fp32", action="store_true")
+    ap.add_argument("--keep-fp32", action="store_true",
+                    help="compatibility option; fp32 intermediates are now always retained")
     args = ap.parse_args()
 
     lang = args.lang
@@ -260,33 +267,51 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
     torch.set_grad_enabled(False)
 
-    log(f"=== {lang}: symbol table ===")
-    sys.argv = ["make_tokens", str(fp_dir / "config.json"), str(out / f"fastpitch-{lang}.tokens.json")]
-    import make_tokens
-    make_tokens.main()
+    # Never overwrite an already staged/released v2 artifact with a different experiment.
+    names = [f"fastpitch-{lang}.v2.onnx", f"hifigan-{lang}.v2.onnx",
+             f"fastpitch-{lang}.v2.tokens.json"]
+    if any((out / name).exists() for name in names):
+        raise ValueError("v2 output already exists; use a fresh --out directory")
+    with tempfile.TemporaryDirectory(prefix=".candidate-", dir=out) as staging:
+        stage = Path(staging)
+        fp, hg, tokens = [stage / name for name in names]
+        log(f"=== {lang}: symbol table ===")
+        import make_tokens
+        previous_argv = sys.argv
+        try:
+            sys.argv = ["make_tokens", str(fp_dir / "config.json"), str(tokens)]
+            make_tokens.main()
+        finally:
+            sys.argv = previous_argv
+        symbols = load_symbols(tokens)
+        ids = probe_ids(symbols)
 
-    log(f"=== {lang}: FastPitch ===")
-    fp32_fp = out / f"fastpitch-{lang}.fp32.onnx"
-    export_fastpitch(fp_dir, fp32_fp, args.speaker_id)
-    quantize(fp32_fp, out / f"fastpitch-{lang}.int8.onnx")
+        log(f"=== {lang}: FastPitch ===")
+        fp32_fp = out / f"fastpitch-{lang}.fp32.onnx"
+        export_fastpitch(fp_dir, fp32_fp, args.speaker_id)
+        validate_artifact(fp32_fp, "fastpitch", ids, standalone=False)
+        convert_float16(fp32_fp, fp)
 
-    log(f"=== {lang}: HiFi-GAN ===")
-    fp32_hg = out / f"hifigan-{lang}.fp32.onnx"
-    export_hifigan(hg_dir, fp32_hg)
-    quantize(fp32_hg, out / f"hifigan-{lang}.int8.onnx")
+        log(f"=== {lang}: HiFi-GAN ===")
+        fp32_hg = out / f"hifigan-{lang}.fp32.onnx"
+        export_hifigan(hg_dir, fp32_hg)
+        validate_artifact(fp32_hg, "hifigan", standalone=False)
+        convert_float16(fp32_hg, hg)
 
-    if not args.keep_fp32:
-        for f in (fp32_fp, fp32_hg):
-            f.unlink(missing_ok=True)
-            # The dynamo exporter writes weights to a sidecar rather than inlining them,
-            # so removing the .onnx alone leaves a few hundred MB behind.
-            Path(str(f) + ".data").unlink(missing_ok=True)
+        probes = validate_pair(fp, hg, symbols)
+        log(f"local candidate dynamic probes: {probes}")
+        for name in names:
+            (stage / name).replace(out / name)
 
-    log(f"=== {lang}: done ===")
+    log(f"=== {lang}: local candidate validated; Android/device listening checks still required ===")
     for f in sorted(out.iterdir()):
         log(f"  {f.name:34s} {f.stat().st_size / 1e6:8.1f} MB")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except Exception as exc:
+        log(f"REJECTED: {exc}; fp32 intermediates retained where export completed")
+        sys.exit(1)

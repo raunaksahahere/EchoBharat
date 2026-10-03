@@ -92,6 +92,24 @@ class ModelImporterTest {
     }
 
     @Test
+    fun `old and new voice hashes remain allowed without replacing the active old file`() {
+        val old = ModelSpec(ModelRole.TTS_ACOUSTIC, "voice.v1.onnx", "u", sha256 = sha("old voice"))
+        val new = ModelSpec(ModelRole.TTS_ACOUSTIC, "voice.v2.onnx", "u", sha256 = sha("new voice"))
+        val pack = LanguageModelSpec("hi", "Hindi", "hi", false, listOf(new), 2, listOf(old))
+        val candidates = File(temp.root, "candidates")
+        val importer = ModelImporter(
+            ModelImporter.index(listOf(pack), emptyList(), { File(models, it) }, File(models, "mt")) { candidates },
+            File(temp.root, "scratch")
+        )
+        assertEquals(listOf("voice.v1.onnx"), importer.import("shared", "old voice".byteInputStream()).installed)
+        assertEquals(listOf("voice.v2.onnx"), importer.import("shared", "new voice".byteInputStream()).installed)
+        assertEquals("old voice", File(models, "hi/voice.v1.onnx").readText())
+        assertEquals("new voice", File(candidates, "voice.v2.onnx").readText())
+        assertFalse(File(models, "hi/voice.v2.onnx").exists())
+        assertEquals(listOf("shared"), importer.import("shared", "unknown voice".byteInputStream()).rejected)
+    }
+
+    @Test
     fun `importing twice reports the file as already present`() {
         val imp = importer()
         imp.import("a", acoustic.byteInputStream())

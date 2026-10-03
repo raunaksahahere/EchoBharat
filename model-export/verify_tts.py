@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
 """
-Drives the exported int8 ONNX pair exactly as the Kotlin FastPitchTts does, and writes a
-WAV so the result can actually be listened to.
+Locally checks an ONNX candidate pair and retains a WAV for human listening.
 
-Mirrors the app's path deliberately: same longest-match tokenisation against
-tokens.json, same two-stage call, same tensor layouts. If this produces speech, the
-contract the app relies on is correct; if it produces noise, the bug is in the export
-rather than somewhere on the phone.
+Uses longest-match tokenisation and the two-stage tensor contract, but fails on unmapped
+characters instead of silently dropping them. Desktop CPU checks and RTF measurements
+are not proof of Android kernel support, device speed, or correct pronunciation.
 """
 from __future__ import annotations
 
 import argparse
-import json
 import struct
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
-import onnxruntime as ort
+
+from tts_validation import (create_session, load_symbols, validate_audio,
+                            validate_dynamic_session, validate_graph, validate_mel)
 
 
 def tokenize(text: str, symbols: list[str]) -> list[int]:
@@ -42,11 +42,13 @@ def tokenize(text: str, symbols: list[str]) -> list[int]:
             skipped.append(text[i])
             i += 1
     if skipped:
-        print(f"  unmapped characters skipped: {''.join(skipped)!r}")
+        raise ValueError(f"unmapped characters: {''.join(skipped)!r}")
     return ids
 
 
 def write_wav(path: Path, audio: np.ndarray, sample_rate: int) -> None:
+    if sample_rate <= 0 or audio.ndim != 1 or not audio.size or not np.isfinite(audio).all():
+        raise ValueError("refusing WAV: need positive sample rate and finite nonempty mono audio")
     pcm = np.clip(audio, -1.0, 1.0)
     pcm = (pcm * 32767.0).astype("<i2")
     data = pcm.tobytes()
@@ -112,16 +114,49 @@ def spectral_report(audio: np.ndarray, sample_rate: int) -> dict:
     return {"dyn_range_db": dyn_range_db, "active_frac": active_frac, "tilt_db": tilt_db}
 
 
+def synthesize(fp, hg, tokens):
+    started = time.perf_counter()
+    mel = fp.run(None, {fp.get_inputs()[0].name: tokens})[0]
+    validate_mel(mel)
+    audio = hg.run(None, {hg.get_inputs()[0].name: mel})[0]
+    validate_audio(audio)
+    elapsed = time.perf_counter() - started
+    return mel, audio.reshape(-1), elapsed
+
+
+def benchmark(fp, hg, tokens, sample_rate: int, warmup: int, runs: int):
+    if sample_rate <= 0 or warmup < 0 or runs < 1:
+        raise ValueError("invalid benchmark sample rate, warmup or run count")
+    for _ in range(warmup):
+        synthesize(fp, hg, tokens)
+    timings, rtfs = [], []
+    for _ in range(runs):
+        mel, audio, elapsed = synthesize(fp, hg, tokens)
+        timings.append(elapsed)
+        rtfs.append(elapsed / (audio.size / sample_rate))
+    return mel, audio, timings, rtfs
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dir", type=Path, required=True, help="directory of exported files")
     ap.add_argument("--lang", required=True)
     ap.add_argument("--text", required=True)
     ap.add_argument("--sample-rate", type=int, default=22050)
+    ap.add_argument("--fastpitch", type=Path, help="candidate path, relative to --dir or absolute")
+    ap.add_argument("--hifigan", type=Path, help="candidate path, relative to --dir or absolute")
+    ap.add_argument("--tokens", type=Path, help="symbol table path, relative to --dir or absolute")
+    ap.add_argument("--wav", type=Path, help="retained output WAV path (default: --dir/sample-<lang>.wav)")
+    ap.add_argument("--warmup", type=int, default=1)
+    ap.add_argument("--runs", type=int, default=3, help="timed end-to-end CPU runs")
     args = ap.parse_args()
+    if args.sample_rate <= 0 or args.warmup < 0 or args.runs < 1:
+        ap.error("sample rate and runs must be positive; warmup must be nonnegative")
 
     d = args.dir
-    symbols = json.loads((d / f"fastpitch-{args.lang}.tokens.json").read_text(encoding="utf-8"))
+    fp_path = d / (args.fastpitch or f"fastpitch-{args.lang}.v2.onnx")
+    hg_path = d / (args.hifigan or f"hifigan-{args.lang}.v2.onnx")
+    symbols = load_symbols(d / (args.tokens or f"fastpitch-{args.lang}.v2.tokens.json"))
     print(f"symbols: {len(symbols)}")
 
     ids = tokenize(args.text, symbols)
@@ -131,29 +166,31 @@ def main() -> int:
         print("FAIL: no tokens produced")
         return 1
 
-    fp = ort.InferenceSession(str(d / f"fastpitch-{args.lang}.int8.onnx"),
-                              providers=["CPUExecutionProvider"])
-    hg = ort.InferenceSession(str(d / f"hifigan-{args.lang}.int8.onnx"),
-                              providers=["CPUExecutionProvider"])
+    validate_graph(fp_path, "fastpitch")
+    validate_graph(hg_path, "hifigan")
+    fp = create_session(fp_path)
+    hg = create_session(hg_path)
+    print(f"dynamic token probes: {validate_dynamic_session(fp, 'fastpitch', ids)}")
+    print(f"dynamic frame probes: {validate_dynamic_session(hg, 'hifigan')}")
     print(f"fastpitch in : {[(i.name, i.shape) for i in fp.get_inputs()]}")
     print(f"fastpitch out: {[(o.name, o.shape) for o in fp.get_outputs()]}")
     print(f"hifigan   in : {[(i.name, i.shape) for i in hg.get_inputs()]}")
     print(f"hifigan   out: {[(o.name, o.shape) for o in hg.get_outputs()]}")
 
     tokens = np.array([ids], dtype=np.int64)
-    mel = fp.run(None, {fp.get_inputs()[0].name: tokens})[0]
+    mel, audio, timings, rtfs = benchmark(fp, hg, tokens, args.sample_rate, args.warmup, args.runs)
     print(f"mel    : {mel.shape}  range [{mel.min():.2f}, {mel.max():.2f}]")
-
-    audio = hg.run(None, {hg.get_inputs()[0].name: mel.astype(np.float32)})[0]
-    audio = np.squeeze(audio)
     print(f"audio  : {audio.shape}  range [{audio.min():.3f}, {audio.max():.3f}]")
+    print(f"desktop CPU benchmark ({args.runs} runs, {args.warmup} warmups, excludes load): "
+          f"median {np.median(timings):.3f}s, RTF median {np.median(rtfs):.3f}, "
+          f"RTF range {min(rtfs):.3f}–{max(rtfs):.3f}")
 
     seconds = audio.size / args.sample_rate
     rms = float(np.sqrt(np.mean(audio.astype(np.float64) ** 2)))
     peak = float(np.max(np.abs(audio)))
     print(f"duration: {seconds:.2f}s   rms {rms:.4f}   peak {peak:.4f}")
 
-    out = d / f"sample-{args.lang}.wav"
+    out = args.wav or d / f"sample-{args.lang}.wav"
     write_wav(out, audio.astype(np.float32), args.sample_rate)
     print(f"wrote   : {out}")
 
@@ -170,8 +207,6 @@ def main() -> int:
         problems.append(f"no energy (rms {rms:.5f})")
     if seconds < 0.2:
         problems.append(f"implausibly short ({seconds:.2f}s for {len(ids)} tokens)")
-    if not np.all(np.isfinite(audio)):
-        problems.append("non-finite samples")
 
     # Spectral checks catch the failures that level alone does not. A vocoder fed a
     # mis-shaped or garbage mel still produces *something* with a healthy RMS — usually
@@ -191,9 +226,13 @@ def main() -> int:
     if problems:
         print("SUSPECT: " + "; ".join(problems))
         return 1
-    print("PASS: audio looks well-formed — listen to the WAV to judge quality")
+    print("LOCAL PASS: audio looks well-formed — listen to the retained WAV; Android tests still required")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except Exception as exc:
+        print(f"REJECTED: {exc}")
+        sys.exit(1)

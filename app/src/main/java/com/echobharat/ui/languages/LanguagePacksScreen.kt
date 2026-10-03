@@ -33,7 +33,7 @@ fun LanguagePacksScreen(
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
-    val modelManager = remember { ModelManager(context) }
+    val modelManager = remember { ModelManager.getInstance(context) }
     val sharing = remember { PackSharing(context) }
     val voicePrefs = remember { VoicePreferences.getInstance(context) }
     val packs = remember { ModelCatalog.languages(context) }
@@ -41,10 +41,17 @@ fun LanguagePacksScreen(
     val activeLanguage by voicePrefs.activeLanguage.collectAsState()
     val progress by modelManager.progress.collectAsState()
     val enabledLanguages by voicePrefs.enabledLanguages.collectAsState()
+    val autoUpdateVoicePacks by voicePrefs.autoUpdateVoicePacks.collectAsState()
     val scope = rememberCoroutineScope()
+    val meteredUpdateLanguages by modelManager.networkConsent.collectAsState()
+    val revision by modelManager.revision.collectAsState()
 
     // Recomputed after each install so status badges reflect what is actually on disk.
     var refreshToken by remember { mutableStateOf(0) }
+
+    LaunchedEffect(autoUpdateVoicePacks) {
+        if (autoUpdateVoicePacks) modelManager.requestAutomaticUpdates()
+    }
     val snackbarHostState = remember { SnackbarHostState() }
     var importing by remember { mutableStateOf(false) }
 
@@ -138,10 +145,30 @@ fun LanguagePacksScreen(
 
             item { OfflineHint() }
 
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Automatically update voice packs", color = TextPrimary, fontWeight = FontWeight.Bold)
+                        Text("Wi-Fi by default; mobile data always asks first", color = TextMuted, fontSize = 11.sp)
+                    }
+                    Switch(
+                        checked = autoUpdateVoicePacks,
+                        onCheckedChange = voicePrefs::setAutoUpdateVoicePacks,
+                        colors = SwitchDefaults.colors(checkedThumbColor = SurfaceCard, checkedTrackColor = AccentSaffron)
+                    )
+                }
+            }
+
             item { SectionHeader("Voice packs", "Listen and speak, one language each") }
 
             items(packs, key = { it.lang }) { pack ->
-                val status = remember(pack.lang, refreshToken) { modelManager.status(pack.lang) }
+                val status by produceState(ModelManager.PackStatus.UNKNOWN, pack.lang, refreshToken, revision) {
+                    value = modelManager.status(pack.lang)
+                }
                 val busy = progress.isFor(pack.lang)
                 LanguagePackItem(
                     pack = pack,
@@ -149,10 +176,10 @@ fun LanguagePacksScreen(
                     enabled = pack.lang in enabledLanguages,
                     progress = progress.takeIf { busy },
                     onInstall = { scope.launch { modelManager.install(pack.lang) } },
-                    onUninstall = {
+                    onUninstall = { scope.launch {
                         modelManager.uninstall(pack.lang)
                         refreshToken++
-                    },
+                    } },
                     onShare = { share(sharing.voicePackFiles(pack.lang), "Share ${pack.displayName} voice pack") },
                     onToggleEnabled = { checked ->
                         if (checked) voicePrefs.enable(pack.lang) else voicePrefs.disable(pack.lang)
@@ -185,15 +212,36 @@ fun LanguagePacksScreen(
                                 refreshToken++
                             }
                         },
-                        onUninstall = {
+                        onUninstall = { scope.launch {
                             modelManager.uninstallTranslation(family.id)
                             refreshToken++
-                        },
+                        } },
                         onShare = { share(sharing.translationFiles(family.id), "Share ${family.title}") }
                     )
                 }
             }
         }
+    }
+
+    if (meteredUpdateLanguages.isNotEmpty()) {
+        AlertDialog(
+            onDismissRequest = { scope.launch { modelManager.dismissNetworkUpdates() } },
+            title = { Text("Download voices on this network?") },
+            text = {
+                Text(
+                    "These verified voice updates may be hundreds of megabytes: " +
+                        meteredUpdateLanguages.joinToString(", ").uppercase() + "."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    scope.launch { modelManager.approveNetworkUpdates() }
+                }) { Text("Use mobile data", color = AccentSaffron) }
+            },
+            dismissButton = {
+                TextButton(onClick = { scope.launch { modelManager.dismissNetworkUpdates() } }) { Text("Not now") }
+            }
+        )
     }
 }
 
@@ -410,13 +458,26 @@ private fun LanguagePackItem(
                 )
             }
 
-            if (status == ModelManager.PackStatus.UNPUBLISHED) {
-                Text(
+            when (status) {
+                ModelManager.PackStatus.UNPUBLISHED -> Text(
                     text = "Not available yet",
                     style = MaterialTheme.typography.labelSmall,
                     color = TextMuted,
                     fontSize = 10.sp
                 )
+                ModelManager.PackStatus.VOICE_NEEDS_UPDATING -> Text(
+                    text = "Voice needs updating — text remains available",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = AccentAlert,
+                    fontSize = 10.sp
+                )
+                ModelManager.PackStatus.UPDATE_AVAILABLE -> Text(
+                    text = "Update available — current files are kept until the new voice loads",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = AccentAlert,
+                    fontSize = 10.sp
+                )
+                else -> Unit
             }
 
             Row(
@@ -453,6 +514,20 @@ private fun StatusAction(
     }
 
     when (status) {
+        ModelManager.PackStatus.UPDATE_AVAILABLE, ModelManager.PackStatus.VOICE_NEEDS_UPDATING -> {
+            OutlinedButton(
+                onClick = onInstall,
+                shape = RoundedCornerShape(8.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, AccentAlert),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = AccentAlert),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+            ) {
+                Icon(Icons.Default.SystemUpdate, contentDescription = null, modifier = Modifier.size(14.dp))
+                Spacer(modifier = Modifier.width(4.dp))
+                Text("Update", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+            }
+        }
+
         ModelManager.PackStatus.INSTALLED -> {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Surface(

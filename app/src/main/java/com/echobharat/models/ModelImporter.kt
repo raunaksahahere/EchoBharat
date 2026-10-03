@@ -40,14 +40,23 @@ class ModelImporter(
             languages: List<LanguageModelSpec>,
             families: List<TranslationFamilySpec>,
             installDir: (String) -> File,
-            translationDir: File
+            translationDir: File,
+            voiceCandidateDir: ((LanguageModelSpec) -> File)? = null
         ): Map<String, List<File>> {
             val map = HashMap<String, MutableList<File>>()
             fun add(spec: ModelSpec, dir: File) {
                 if (spec.sha256.isBlank()) return
                 map.getOrPut(spec.sha256.lowercase()) { mutableListOf() }.add(File(dir, spec.fileName))
             }
-            languages.forEach { l -> l.models.forEach { add(it, installDir(l.lang)) } }
+            languages.forEach { l ->
+                l.models.forEach {
+                    val dir = if (it.role in VoicePackFiles.roles && voiceCandidateDir != null)
+                        voiceCandidateDir(l) else installDir(l.lang)
+                    add(it, dir)
+                }
+                // Historical hashes are explicitly allowlisted, never inferred from a filename.
+                l.legacyModels.forEach { add(it, installDir(l.lang)) }
+            }
             families.forEach { f -> (f.files + f.fast).forEach { add(it, translationDir) } }
             return map
         }

@@ -317,6 +317,30 @@ Bluetooth mesh, so the x86 variants would be tens of megabytes of unused native 
 needs its own copy of ONNX Runtime. `./gradlew assembleRelease` signs them when an untracked
 `keystore.properties` (`storeFile`, `storePassword`, `keyAlias`, `keyPassword`) is present.
 
+### Voice-pack updates
+
+The bundled manifest gives each language a `packVersion` and each file a SHA-256.
+At startup and when Wi-Fi reconnects, the app checks existing voice packs against that
+manifest. **Language Packs** shows **Update available**, or **Voice needs updating** if
+native loading failed. Text messages remain usable when a voice cannot load.
+
+Automatic voice updates are enabled by default and can be turned off in Language Packs.
+Only existing voices are upgraded; opening the app does not download every language.
+Automatic transfers require validated, unmetered Wi-Fi. Other connections require an
+explicit confirmation in Language Packs, and a transfer pauses if its network permission
+changes. Recognition and translation files are not redownloaded by voice-only updates.
+
+Replacements are resumed and SHA-256 verified in a separate candidate directory. The
+acoustic model, vocoder and token table are activated together by an atomic metadata
+update, only after both native sessions load. Previous files are retained for fallback;
+a failed or interrupted replacement does not overwrite them. Imports accept only hashes
+explicitly listed in the current or historical manifest entries.
+
+**Migration implementation is not yet a verified TTS fix.** This checkout still bundles
+pack version 1 URLs. New model URLs and hashes must not be shipped until export, both-phone
+load/synthesis checks, and public-download hash verification have succeeded. A new APK
+alone cannot convert an incompatible ONNX model on a phone.
+
 **Getting speech onto a phone.** The APK bundles the voice-activity detector only; everything
 else comes from **Language Packs** — downloaded, or imported from a phone that shared it. To
 test a model before it is hosted anywhere, sideload it:
@@ -358,9 +382,9 @@ generated, and the pinned dependency versions.
 
 ## 📍 Project status
 
-Actively in development. Every piece of the voice loop exists as a runnable, verified model
-and the app is wired end to end — but **it has not yet been run on real phones**, which is the
-honest bar for a project like this.
+Actively in development. Text and translation have prior phone-test evidence, but the
+published voice models do not yet establish a working spoken loop on Android. Desktop
+spectral checks are not proof of Android kernel compatibility or spoken quality.
 
 - ✅ **Voice packs for nine languages** — recognition and synthesis, downloadable in-app,
   SHA-256 verified. Each synthesis model passed spectral checks and ships a sample WAV.

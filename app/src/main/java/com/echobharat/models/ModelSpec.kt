@@ -68,7 +68,11 @@ data class LanguageModelSpec(
     val displayName: String,
     val nativeName: String,
     val bundled: Boolean,
-    val models: List<ModelSpec>
+    val models: List<ModelSpec>,
+    /** Monotonic voice-pack schema/version, independent of the APK version. */
+    val packVersion: Int = 1,
+    /** Historical, still trusted hashes for resolving and importing existing voice files. */
+    val legacyModels: List<ModelSpec> = emptyList()
 ) {
     fun of(role: ModelRole): ModelSpec? = models.firstOrNull { it.role == role }
 
