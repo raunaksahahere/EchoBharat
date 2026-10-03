@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.util.Log
 import com.echobharat.identity.IdentityManager
+import com.echobharat.identity.SecureIdentityStateManager
 import com.echobharat.mesh.model.BitchatMessage
 import com.echobharat.mesh.service.MeshServiceHolder
 import com.echobharat.mesh.transport.MeshDelegate
@@ -14,6 +15,8 @@ import com.echobharat.mesh.transport.MeshService
 import com.echobharat.schema.EchoBharatMessage
 import com.echobharat.schema.MessageType
 import com.echobharat.schema.Peer
+import com.echobharat.services.VerificationService
+import com.echobharat.util.dataFromHexString
 import com.echobharat.services.meshgraph.MeshGraphService
 import com.echobharat.services.meshgraph.RoutePlanner
 import kotlinx.coroutines.*
@@ -264,6 +267,54 @@ class EchoBharatMeshManager(private val context: Context) : MeshDelegate {
             Log.e(TAG, "Failed to broadcast authenticated SOS: ${e.message}", e)
             false
         }
+    }
+
+    private val verificationRevision = MutableStateFlow(0L)
+    val contactVerificationRevision: StateFlow<Long> = verificationRevision.asStateFlow()
+
+    private val secureIdentityState by lazy { SecureIdentityStateManager(context) }
+
+    enum class ContactVerificationStatus { VERIFIED, UNVERIFIED, KEY_CHANGED }
+
+    fun contactVerificationStatus(peerId: String): ContactVerificationStatus {
+        val info = meshService?.getPeerInfo(peerId) ?: return ContactVerificationStatus.UNVERIFIED
+        val signingKey = info.signingPublicKey ?: return ContactVerificationStatus.UNVERIFIED
+        val fingerprint = secureIdentityState.generateFingerprint(signingKey)
+        val cached = secureIdentityState.getCachedPeerFingerprint(peerId)
+        return when {
+            cached == null -> ContactVerificationStatus.UNVERIFIED
+            cached == fingerprint && secureIdentityState.isVerifiedFingerprint(fingerprint) -> ContactVerificationStatus.VERIFIED
+            else -> {
+                secureIdentityState.setVerifiedFingerprint(cached, false)
+                ContactVerificationStatus.KEY_CHANGED
+            }
+        }
+    }
+
+    fun contactSafetyNumber(peerId: String): String? {
+        val key = meshService?.getPeerInfo(peerId)?.signingPublicKey ?: return null
+        return secureIdentityState.generateFingerprint(key).take(12).uppercase()
+            .chunked(4).joinToString(" ")
+    }
+
+    fun myVerificationQr(): String? {
+        val identity = identityManager.getCurrentIdentity() ?: return null
+        return VerificationService.buildMyQRString(identity.displayName, null)
+    }
+
+    fun verifyContact(peerId: String, qrPayload: String): ContactVerificationStatus? {
+        val info = meshService?.getPeerInfo(peerId) ?: return null
+        val qr = VerificationService.verifyScannedQR(qrPayload) ?: return null
+        val noise = qr.noiseKeyHex.dataFromHexString() ?: return null
+        val signing = qr.signKeyHex.dataFromHexString() ?: return null
+        if (!noise.contentEquals(info.noisePublicKey ?: return null) ||
+            !signing.contentEquals(info.signingPublicKey ?: return null)
+        ) return null
+        val fingerprint = secureIdentityState.generateFingerprint(signing)
+        secureIdentityState.cachePeerFingerprint(peerId, fingerprint)
+        secureIdentityState.setVerifiedFingerprint(fingerprint, true)
+        verificationRevision.value++
+        return ContactVerificationStatus.VERIFIED
     }
 
     fun expectedSosKeys(envelope: SosEnvelope): Pair<ByteArray, ByteArray>? {

@@ -27,6 +27,7 @@ import com.echobharat.ui.languages.LanguagePacksScreen
 import com.echobharat.schema.Peer
 import com.echobharat.ui.home.HomeScreen
 import com.echobharat.ui.onboarding.OnboardingScreen
+import com.echobharat.ui.verification.ContactVerificationDialog
 import com.echobharat.ui.theme.SurfaceBg
 import com.echobharat.ui.theme.EchoBharatTheme
 import com.echobharat.ui.transceiver.TransceiverScreen
@@ -89,6 +90,7 @@ class MainActivity : ComponentActivity() {
                     // conversation instead of dropping to the peer list. Saveable, so
                     // rotating the phone mid-conversation no longer lands on HOME.
                     var activePeer by rememberSaveable { mutableStateOf<Peer?>(null) }
+                    var verificationPeer by remember { mutableStateOf<Peer?>(null) }
                     var currentScreen by rememberSaveable {
                         mutableStateOf(
                             if (identityManager.hasIdentity()) AppScreen.HOME else AppScreen.ONBOARDING
@@ -128,7 +130,8 @@ class MainActivity : ComponentActivity() {
                                 },
                                 onOpenLanguages = {
                                     currentScreen = AppScreen.LANGUAGES
-                                }
+                                },
+                                onVerifyPeer = { verificationPeer = it }
                             )
                         }
 
@@ -149,7 +152,8 @@ class MainActivity : ComponentActivity() {
                                     },
                                     onOpenLanguages = {
                                         currentScreen = AppScreen.LANGUAGES
-                                    }
+                                    },
+                                    onVerifyPeer = { verificationPeer = it }
                                 )
                             }
                         }
@@ -163,6 +167,14 @@ class MainActivity : ComponentActivity() {
                                 }
                             )
                         }
+                    }
+
+                    verificationPeer?.let { target ->
+                        ContactVerificationDialog(
+                            meshManager = meshManager,
+                            peer = target,
+                            onDismiss = { verificationPeer = null }
+                        )
                     }
                 }
             }

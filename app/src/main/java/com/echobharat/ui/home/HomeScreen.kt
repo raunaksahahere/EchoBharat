@@ -12,6 +12,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -44,10 +45,12 @@ import kotlinx.coroutines.launch
 fun HomeScreen(
     meshManager: EchoBharatMeshManager,
     onOpenPeer: (Peer) -> Unit,
-    onOpenLanguages: () -> Unit
+    onOpenLanguages: () -> Unit,
+    onVerifyPeer: (Peer) -> Unit
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val peers by meshManager.connectedPeers.collectAsState()
+    val verificationRevision by meshManager.contactVerificationRevision.collectAsState()
     val sosAnnouncements by meshManager.sos.announcements.collectAsState()
     val voicePrefs = remember { VoicePreferences.getInstance(context) }
     val selectedLanguage by voicePrefs.activeLanguage.collectAsState()
@@ -66,6 +69,7 @@ fun HomeScreen(
         model.contains(q, ignoreCase = true) ||
         id.contains(q, ignoreCase = true)
 
+    val nameCounts = remember(peers) { peers.groupingBy { it.name.trim().lowercase() }.eachCount() }
     val filtered = remember(peers, q) { peers.filter { matches(it.name, it.deviceModel, it.peerId) } }
 
     // Conversations kept on this phone with people who are not reachable right now. They
@@ -168,10 +172,15 @@ fun HomeScreen(
                     item { SectionLabel("Nobody in range right now") }
                 }
                 items(filtered, key = { it.peerId }) { peer ->
+                    val shownPeer = if ((nameCounts[peer.name.trim().lowercase()] ?: 0) > 1) {
+                        peer.copy(name = "${peer.name} · ${peer.peerId.takeLast(4)}")
+                    } else peer
                     PeerRow(
-                        peer = peer,
+                        peer = shownPeer,
                         conversation = conversations[peer.peerId],
-                        onClick = { onOpenPeer(peer) }
+                        onClick = { onOpenPeer(shownPeer) },
+                        onVerify = { onVerifyPeer(peer) },
+                        verificationStatus = meshManager.contactVerificationStatus(peer.peerId)
                     )
                     HorizontalDivider(color = BorderSubtle, thickness = 0.5.dp)
                 }
@@ -179,7 +188,14 @@ fun HomeScreen(
                     item { SectionLabel("Earlier conversations · out of range") }
                     items(earlier, key = { "earlier-${it.peerId}" }) { c ->
                         val peer = Peer(peerId = c.peerId, name = c.peerName, deviceModel = c.deviceModel, hops = 0)
-                        PeerRow(peer = peer, conversation = c, inRange = false, onClick = { onOpenPeer(peer) })
+                        PeerRow(
+                            peer = peer,
+                            conversation = c,
+                            inRange = false,
+                            onClick = { onOpenPeer(peer) },
+                            onVerify = { onVerifyPeer(peer) },
+                            verificationStatus = meshManager.contactVerificationStatus(peer.peerId)
+                        )
                         HorizontalDivider(color = BorderSubtle, thickness = 0.5.dp)
                     }
                 }
@@ -266,7 +282,9 @@ private fun PeerRow(
     peer: Peer,
     conversation: Conversation?,
     inRange: Boolean = true,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onVerify: () -> Unit,
+    verificationStatus: EchoBharatMeshManager.ContactVerificationStatus
 ) {
     Row(
         modifier = Modifier
@@ -313,9 +331,17 @@ private fun PeerRow(
                 maxLines = 1,
                 overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
             )
+            if (verificationStatus == EchoBharatMeshManager.ContactVerificationStatus.VERIFIED) {
+                Text("✅ Verified", color = AccentEmerald, fontSize = 10.sp)
+            } else if (verificationStatus == EchoBharatMeshManager.ContactVerificationStatus.KEY_CHANGED) {
+                Text("⚠ Identity changed", color = AccentAlert, fontSize = 10.sp)
+            }
         }
 
         Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            IconButton(onClick = onVerify, modifier = Modifier.size(30.dp)) {
+                Icon(Icons.Default.VerifiedUser, contentDescription = "Verify ${peer.name}", tint = if (verificationStatus == EchoBharatMeshManager.ContactVerificationStatus.VERIFIED) AccentEmerald else TextMuted)
+            }
             if (inRange) HopBadge(hops = peer.hops)
             val unread = conversation?.unread ?: 0
             if (unread > 0) {
