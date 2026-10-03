@@ -170,6 +170,17 @@ class IdentityManager(private val context: Context) {
         }
     }
 
+    /** Returns the local Ed25519 private key for signing origin-authenticated envelopes. */
+    fun getSigningPrivateKey(): ByteArray {
+        val privateKey = prefs.getString(KEY_SIGNING_PRIVATE_KEY, null)
+            ?: run {
+                val keypair = generateEd25519Keys()
+                saveSigningKeys(keypair.first, keypair.second)
+                Base64.encodeToString(keypair.first, Base64.NO_WRAP)
+            }
+        return Base64.decode(privateKey, Base64.NO_WRAP)
+    }
+
     /**
      * Checks if initial identity onboarding is complete.
      */

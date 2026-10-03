@@ -66,7 +66,15 @@ data class EchoBharatMessage(
 
     /** For SOS_RESOLVED: the msgId of the announcement being cancelled. */
     @SerializedName("refMsgId")
-    val refMsgId: String? = null
+    val refMsgId: String? = null,
+
+    /** True only for a v2 SOS whose inner origin signature was verified. */
+    @SerializedName("sosVerified")
+    val sosVerified: Boolean = false,
+
+    /** Full SHA-256 fingerprint of the v2 SOS origin signing key. */
+    @SerializedName("sosOriginKeyFingerprint")
+    val sosOriginKeyFingerprint: String? = null
 ) : Parcelable {
 
     val isSos: Boolean get() = type == MessageType.SOS

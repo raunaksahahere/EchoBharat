@@ -46,8 +46,11 @@ data class PeerCapabilities(val rawValue: Long) : Parcelable {
         /** Reserved by iOS; decode it but do not advertise or act on it. */
         val NON_DESTRUCTIVE_NOISE_REPLACEMENT = PeerCapabilities(1L shl 10)
 
+        /** Origin-signed, versioned SOS envelopes. */
+        val SOS_V2 = PeerCapabilities(1L shl 11)
+
         /** Capabilities implemented by this Android build. */
-        val LOCAL_SUPPORTED = PRIVATE_MEDIA
+        val LOCAL_SUPPORTED = PeerCapabilities(PRIVATE_MEDIA.rawValue or SOS_V2.rawValue)
 
         /**
          * Decode the low 64 bits and ignore any future extension bytes, which
