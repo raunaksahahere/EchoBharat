@@ -152,6 +152,18 @@ class ConversationRepository private constructor(context: Context) {
 
     fun clearConversation(peerId: String) = log.clear(peerId)
 
+    /** Cryptographically erases local conversation history for the panic-wipe path. */
+    fun panicWipe() {
+        _activePeer.value = null
+        synchronized(workLock) {
+            jobs.clear()
+            activeWork = null
+        }
+        log.clearAll()
+        runCatching { store.delete() }
+        runCatching { store.destroyKey() }
+    }
+
     fun readAloud(msgId: String) {
         val entry = log.entry(msgId) ?: return
         enqueue(ConversationWork(msgId, speak = true, urgent = isUrgent(entry.message)))

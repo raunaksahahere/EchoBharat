@@ -1,3 +1,9 @@
+> **1.4.1 security-branch snapshot — incomplete hardening.** This version preserves
+> work in progress from `security-hardening`, based on v1.4.0. It does not include the
+> separate v2 voice-pack export changes. Do not rely on its SOS authentication,
+> contact verification, or panic wipe as completed security guarantees. See
+> [snapshot limitations](SECURITY-SNAPSHOT.md) before installing or deploying it.
+
 <div align="center">
 
 <img src=".github/assets/echobharat.png" width="168" height="168" alt="EchoBharat logo" />

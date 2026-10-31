@@ -53,7 +53,8 @@ fun TransceiverScreen(
     meshManager: EchoBharatMeshManager,
     peer: Peer,
     onBack: () -> Unit,
-    onOpenLanguages: () -> Unit
+    onOpenLanguages: () -> Unit,
+    onVerifyPeer: (Peer) -> Unit
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as Application
@@ -77,6 +78,8 @@ fun TransceiverScreen(
     // The live entry carries fresh name, model and hop count; fall back to what we were
     // opened with while the peer is out of range.
     val shownPeer = livePeer ?: peer
+    val verificationRevision by meshManager.contactVerificationRevision.collectAsState()
+    val verificationStatus = meshManager.contactVerificationStatus(shownPeer.peerId)
     val entries = conversation?.entries.orEmpty()
 
     var typedText by rememberSaveable { mutableStateOf("") }
@@ -126,13 +129,20 @@ fun TransceiverScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { ConversationTitle(shownPeer, present = livePeer != null, meshOnline = isMeshRunning) },
+                title = { ConversationTitle(shownPeer, present = livePeer != null, meshOnline = isMeshRunning, verificationStatus = verificationStatus) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back to people", tint = TextSecondary)
                     }
                 },
                 actions = {
+                    IconButton(onClick = { onVerifyPeer(shownPeer) }) {
+                        Icon(
+                            Icons.Default.VerifiedUser,
+                            contentDescription = "Verify ${shownPeer.name}",
+                            tint = if (verificationStatus == EchoBharatMeshManager.ContactVerificationStatus.VERIFIED) AccentEmerald else TextMuted
+                        )
+                    }
                     FilledTonalButton(
                         onClick = { showLangPicker = true },
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
@@ -301,7 +311,12 @@ fun TransceiverScreen(
 }
 
 @Composable
-private fun ConversationTitle(peer: Peer, present: Boolean, meshOnline: Boolean) {
+private fun ConversationTitle(
+    peer: Peer,
+    present: Boolean,
+    meshOnline: Boolean,
+    verificationStatus: EchoBharatMeshManager.ContactVerificationStatus
+) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         Box(
             modifier = Modifier
@@ -317,14 +332,22 @@ private fun ConversationTitle(peer: Peer, present: Boolean, meshOnline: Boolean)
             )
         }
         Column {
-            Text(
-                peer.name,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = TextPrimary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    peer.name,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = TextPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (verificationStatus == EchoBharatMeshManager.ContactVerificationStatus.VERIFIED) {
+                    Text("✅", fontSize = 12.sp)
+                }
+            }
+            if (verificationStatus == EchoBharatMeshManager.ContactVerificationStatus.KEY_CHANGED) {
+                Text("Identity changed — verify", color = AccentAlert, fontSize = 10.sp)
+            }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 val color = when {
                     !meshOnline -> AccentAlert

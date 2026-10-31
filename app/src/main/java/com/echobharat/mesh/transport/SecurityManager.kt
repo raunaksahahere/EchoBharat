@@ -2,6 +2,7 @@ package com.echobharat.mesh.transport
 
 import android.util.Log
 import com.echobharat.crypto.EncryptionService
+import com.echobharat.mesh.SosEnvelope
 import com.echobharat.mesh.protocol.BitchatPacket
 import com.echobharat.mesh.protocol.MessageType
 import com.echobharat.mesh.model.RoutedPacket
@@ -56,6 +57,19 @@ class SecurityManager(private val encryptionService: EncryptionService, private 
         // Replay attack protection (same 5-minute window as iOS)
         val currentTime = System.currentTimeMillis()
         val messageType = MessageType.fromValue(packet.type)
+
+        // Verify the origin signature before transport duplicate bookkeeping. A relay may
+        // authenticate the outer packet while carrying a forged or altered SOS envelope.
+        if (messageType == MessageType.MESSAGE && packet.payload.startsWithAscii(SosEnvelope.WIRE_PREFIX)) {
+            val envelope = SosEnvelope.decodeWire(packet.payload) ?: return false
+            val originPeer = envelope.originPeerId ?: return false
+            val info = delegate?.getPeerInfo(originPeer) ?: return false
+            val signingKey = info.signingPublicKey ?: return false
+            val noiseKey = info.noisePublicKey ?: return false
+            if (!info.hasVerifiedAnnouncement ||
+                !SosEnvelope.verify(envelope, signingKey, noiseKey, currentTime)
+            ) return false
+        }
 
         // LEAVE mutates presence immediately and cannot be safely replayed after the in-memory
         // duplicate cache expires (or after an app restart). Bound it to the same five-minute
@@ -241,6 +255,11 @@ class SecurityManager(private val encryptionService: EncryptionService, private 
     /**
      * Generate message ID for duplicate detection
      */
+    private fun ByteArray.startsWithAscii(prefix: String): Boolean {
+        val bytes = prefix.toByteArray(Charsets.US_ASCII)
+        return size >= bytes.size && bytes.indices.all { this[it] == bytes[it] }
+    }
+
     private fun generateMessageID(packet: BitchatPacket, peerID: String): String {
         return when (MessageType.fromValue(packet.type)) {
             MessageType.FRAGMENT -> {

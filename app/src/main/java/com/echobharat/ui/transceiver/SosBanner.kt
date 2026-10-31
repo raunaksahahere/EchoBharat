@@ -74,6 +74,12 @@ internal fun SosBanner(
                                 fontSize = 12.sp
                             )
                             Text(
+                                text = if (msg.sosVerified) "✅ Verified SOS" else "⚠ Unverified legacy SOS",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (msg.sosVerified) AccentEmerald else AccentAlert,
+                                fontSize = 10.sp
+                            )
+                            Text(
                                 text = buildString {
                                     if (entry.isMine) append("Your SOS is live  •  ")
                                 append("${minsLeft} min left")

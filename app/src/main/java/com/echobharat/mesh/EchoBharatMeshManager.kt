@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.util.Log
 import com.echobharat.identity.IdentityManager
+import com.echobharat.identity.SecureIdentityStateManager
 import com.echobharat.mesh.model.BitchatMessage
 import com.echobharat.mesh.service.MeshServiceHolder
 import com.echobharat.mesh.transport.MeshDelegate
@@ -14,6 +15,10 @@ import com.echobharat.mesh.transport.MeshService
 import com.echobharat.schema.EchoBharatMessage
 import com.echobharat.schema.MessageType
 import com.echobharat.schema.Peer
+import com.echobharat.services.AppStateStore
+import com.echobharat.services.VerificationService
+import com.echobharat.conversation.ConversationRepository
+import com.echobharat.util.dataFromHexString
 import com.echobharat.services.meshgraph.MeshGraphService
 import com.echobharat.services.meshgraph.RoutePlanner
 import kotlinx.coroutines.*
@@ -23,6 +28,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.security.SecureRandom
 import java.util.UUID
 
 /** Where an outgoing private message is on its way to the recipient. */
@@ -252,6 +258,176 @@ class EchoBharatMeshManager(private val context: Context) : MeshDelegate {
         }
     }
 
+    private fun broadcastSos(envelope: SosEnvelope): Boolean {
+        val service = meshService ?: return false
+        val wire = SosEnvelope.encodeWire(envelope) ?: return false
+        return try {
+            service.sendMessage(String(wire, Charsets.US_ASCII))
+            Log.d(TAG, "Broadcast authenticated SOS ${envelope.action} ${envelope.eventId.contentHashCode()}")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to broadcast authenticated SOS: ${e.message}", e)
+            false
+        }
+    }
+
+    private val verificationRevision = MutableStateFlow(0L)
+    val contactVerificationRevision: StateFlow<Long> = verificationRevision.asStateFlow()
+
+    private val secureIdentityState by lazy { SecureIdentityStateManager(context) }
+
+    enum class ContactVerificationStatus { VERIFIED, UNVERIFIED, KEY_CHANGED }
+
+    fun contactVerificationStatus(peerId: String): ContactVerificationStatus {
+        val info = meshService?.getPeerInfo(peerId) ?: return ContactVerificationStatus.UNVERIFIED
+        val signingKey = info.signingPublicKey ?: return ContactVerificationStatus.UNVERIFIED
+        val fingerprint = secureIdentityState.generateFingerprint(signingKey)
+        val cached = secureIdentityState.getCachedPeerFingerprint(peerId)
+        return when {
+            cached == null -> ContactVerificationStatus.UNVERIFIED
+            cached == fingerprint && secureIdentityState.isVerifiedFingerprint(fingerprint) -> ContactVerificationStatus.VERIFIED
+            else -> {
+                secureIdentityState.setVerifiedFingerprint(cached, false)
+                ContactVerificationStatus.KEY_CHANGED
+            }
+        }
+    }
+
+    fun contactSafetyNumber(peerId: String): String? {
+        val key = meshService?.getPeerInfo(peerId)?.signingPublicKey ?: return null
+        return secureIdentityState.generateFingerprint(key).take(12).uppercase()
+            .chunked(4).joinToString(" ")
+    }
+
+    /** Wipes all identity, peer, conversation, transport, and Keystore-backed state. */
+    fun panicWipe() {
+        stopMesh()
+        runCatching { meshService?.clearAllInternalData() }
+        runCatching { meshService?.clearAllEncryptionData() }
+        runCatching { ConversationRepository.getInstance(context).panicWipe() }
+        runCatching { secureIdentityState.clearIdentityData() }
+        runCatching { identityManager.clearIdentityData() }
+        AppStateStore.clear()
+        verificationRevision.value++
+    }
+
+    fun myVerificationQr(): String? {
+        val identity = identityManager.getCurrentIdentity() ?: return null
+        return VerificationService.buildMyQRString(identity.displayName, null)
+    }
+
+    fun verifyContact(peerId: String, qrPayload: String): ContactVerificationStatus? {
+        val info = meshService?.getPeerInfo(peerId) ?: return null
+        val qr = VerificationService.verifyScannedQR(qrPayload) ?: return null
+        val noise = qr.noiseKeyHex.dataFromHexString() ?: return null
+        val signing = qr.signKeyHex.dataFromHexString() ?: return null
+        if (!noise.contentEquals(info.noisePublicKey ?: return null) ||
+            !signing.contentEquals(info.signingPublicKey ?: return null)
+        ) return null
+        val fingerprint = secureIdentityState.generateFingerprint(signing)
+        secureIdentityState.cachePeerFingerprint(peerId, fingerprint)
+        secureIdentityState.setVerifiedFingerprint(fingerprint, true)
+        verificationRevision.value++
+        return ContactVerificationStatus.VERIFIED
+    }
+
+    fun expectedSosKeys(envelope: SosEnvelope): Pair<ByteArray, ByteArray>? {
+        val peerId = envelope.originPeerId ?: return null
+        val info = meshService?.getPeerInfo(peerId) ?: return null
+        if (!info.hasVerifiedAnnouncement) return null
+        val signing = info.signingPublicKey ?: return null
+        val noise = info.noisePublicKey ?: return null
+        return signing.copyOf() to noise.copyOf()
+    }
+
+    fun sendSosV2(
+        text: String,
+        srcLang: String,
+        lat: Double?,
+        lon: Double?,
+        accuracy: Float?,
+        expiresAt: Long
+    ): SosEnvelope? {
+        val identity = identityManager.getCurrentIdentity()
+            ?: identityManager.getOrCreateIdentity("User")
+        val noise = meshService?.getStaticNoisePublicKey() ?: return null
+        if (com.echobharat.mesh.noise.NoisePeerIdentity.derivePeerID(noise) != myPeerId) return null
+        val now = System.currentTimeMillis()
+        val eventId = ByteArray(16).also { SecureRandom().nextBytes(it) }
+        val envelope = SosEnvelope.create(
+            action = SosEnvelope.Action.RAISE,
+            eventId = eventId,
+            revision = 0,
+            createdAt = now,
+            expiresAt = expiresAt,
+            originSigningKey = identityManager.getSigningPublicKey(),
+            originNoiseKey = noise,
+            srcLang = srcLang,
+            text = text,
+            senderName = identity.displayName,
+            deviceModel = identity.deviceModel,
+            latitude = lat,
+            longitude = lon,
+            gpsAccuracyM = accuracy,
+            privateKey = identityManager.getSigningPrivateKey()
+        ) ?: return null
+        return envelope.takeIf { broadcastSos(it) }
+    }
+
+    fun rebroadcastSos(envelope: SosEnvelope): Boolean =
+        if (envelope.expiresAt <= System.currentTimeMillis()) false else broadcastSos(envelope)
+
+    fun updateSosV2(
+        original: SosEnvelope,
+        revision: Long,
+        lat: Double?,
+        lon: Double?,
+        accuracy: Float?
+    ): SosEnvelope? {
+        val identity = identityManager.getCurrentIdentity()
+            ?: identityManager.getOrCreateIdentity("User")
+        if (!identityManager.getSigningPublicKey().contentEquals(original.originSigningKey)) return null
+        val envelope = SosEnvelope.create(
+            action = SosEnvelope.Action.UPDATE,
+            eventId = original.eventId,
+            revision = revision,
+            createdAt = original.createdAt,
+            expiresAt = original.expiresAt,
+            originSigningKey = original.originSigningKey,
+            originNoiseKey = original.originNoiseKey,
+            srcLang = original.srcLang,
+            text = original.text,
+            senderName = identity.displayName,
+            deviceModel = identity.deviceModel,
+            latitude = lat,
+            longitude = lon,
+            gpsAccuracyM = accuracy,
+            privateKey = identityManager.getSigningPrivateKey()
+        ) ?: return null
+        return envelope.takeIf { broadcastSos(it) }
+    }
+
+    fun sendSosResolvedV2(original: SosEnvelope, revision: Long): SosEnvelope? {
+        val identity = identityManager.getCurrentIdentity()
+            ?: identityManager.getOrCreateIdentity("User")
+        if (!identityManager.getSigningPublicKey().contentEquals(original.originSigningKey)) return null
+        val envelope = SosEnvelope.create(
+            action = SosEnvelope.Action.CANCEL,
+            eventId = original.eventId,
+            revision = revision,
+            createdAt = original.createdAt,
+            expiresAt = original.expiresAt,
+            originSigningKey = original.originSigningKey,
+            originNoiseKey = original.originNoiseKey,
+            srcLang = original.srcLang,
+            text = "",
+            senderName = identity.displayName,
+            deviceModel = identity.deviceModel,
+            privateKey = identityManager.getSigningPrivateKey()
+        ) ?: return null
+        return envelope.takeIf { broadcastSos(it) }
+    }
+
     /**
      * Raises a distress announcement: broadcast, no recipient, carrying coordinates when
      * a fix was available. Always sent in the clear on the public mesh — a distress call
@@ -319,6 +495,26 @@ class EchoBharatMeshManager(private val context: Context) : MeshDelegate {
 
     override fun didReceiveMessage(message: BitchatMessage) {
         val payloadBytes = message.content.toByteArray(Charsets.UTF_8)
+        val authenticatedSos = if (message.content.startsWith(SosEnvelope.WIRE_PREFIX)) {
+            SosEnvelope.decodeWire(payloadBytes)
+        } else null
+        if (message.content.startsWith(SosEnvelope.WIRE_PREFIX)) {
+            val envelope = authenticatedSos ?: return
+            if (expectedSosKeys(envelope)?.let { keys ->
+                    SosEnvelope.verify(envelope, keys.first, keys.second, System.currentTimeMillis())
+                } != true) {
+                Log.w(TAG, "Dropping unauthenticated SOS v2 envelope")
+                return
+            }
+            val decoded = envelope.toMessage()
+            if (decoded.isExpired()) return
+            val hops = senderHops(decoded.senderId)
+            if (RangePolicy.evaluate(hops, decoded.origin(), locationProvider.lastKnown()) is RangePolicy.Verdict.OutOfRange) return
+            if (sos.onReceived(envelope)) {
+                scope.launch { _incomingMessages.emit(decoded) }
+            }
+            return
+        }
         val parsed = EchoBharatMeshPayloadCodec.decode(
             payloadBytes = payloadBytes,
             fallbackSenderId = message.senderPeerID ?: message.sender,

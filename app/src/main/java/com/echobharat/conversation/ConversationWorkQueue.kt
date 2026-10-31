@@ -82,6 +82,11 @@ internal class ConversationWorkQueue(private val capacity: Int = 64) {
         )
     }
 
+    @Synchronized fun clear() {
+        pending.clear()
+        mutableStatus.value = mutableStatus.value.copy(pending = 0)
+    }
+
     suspend fun awaitSignal() { wake.receive() }
 
     suspend fun take(): ConversationWork {
